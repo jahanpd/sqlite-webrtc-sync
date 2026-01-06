@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Peer Sync Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .log { color: #666; margin: 2px 0; }
+  </style>
+</head>
+<body>
+  <h1>Peer Sync Test Harness</h1>
+  <div id="log"></div>
+  <script type="module">
+    import { createDatabase } from './index.js';
+
+    // Store database instances by name
+    window.databases = new Map();
+
+    // Default peer server config - uses local peer server for testing
+    const DEFAULT_PEER_SERVER = {
+      host: 'localhost',
+      port: 9000,
+      path: '/',
+      secure: false
+    };
+
+    function log(msg) {
+      const div = document.createElement('div');
+      div.className = 'log';
+      div.textContent = new Date().toISOString().split('T')[1] + ' ' + msg;
+      document.getElementById('log').appendChild(div);
+      console.log(msg);
+    }
+
+    // Create a syncing database and return its peer ID
+    window.createSyncingDb = async function(name, peerServerConfig) {
+      log(`Creating syncing database: ${name}`);
+      const config = {
+        mode: 'syncing',
+        peerServer: peerServerConfig || DEFAULT_PEER_SERVER
+      };
+      const db = await createDatabase(name, config);
+      window.databases.set(name, db);
+      const peerId = db.getPeerId();
+      log(`Database ${name} created with peer ID: ${peerId}`);
+      return { peerId };
+    };
+
+    // Create a local database (no peer capabilities)
+    window.createLocalDb = async function(name) {
+      log(`Creating local database: ${name}`);
+      const db = await createDatabase(name, { mode: 'local' });
+      window.databases.set(name, db);
+      log(`Local database ${name} created`);
+      return { success: true };
+    };
+
+    // Connect to a remote peer
+    window.connectToPeer = async function(dbName, remotePeerId) {
+      log(`Database ${dbName} connecting to peer: ${remotePeerId}`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.connectToPeer(remotePeerId);
+      log(`Database ${dbName} connected to peer: ${remotePeerId}`);
+      return { success: true };
+    };
+
+    // Get list of connected peers
+    window.getConnectedPeers = function(dbName) {
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      const peers = db.getConnectedPeers();
+      log(`Database ${dbName} has ${peers.length} connected peers`);
+      return peers;
+    };
+
+    // Get peer ID
+    window.getPeerId = function(dbName) {
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      return db.getPeerId();
+    };
+
+    // Execute SQL
+    window.execSql = async function(dbName, sql) {
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      log(`Database ${dbName} executing: ${sql}`);
+      const result = await db.exec(sql);
+      log(`Database ${dbName} result: ${result.rows.length} rows`);
+      return result;
+    };
+
+    // Export data from remote peer (pull their data to us)
+    window.exportToPeer = async function(dbName, peerId) {
+      log(`Database ${dbName} requesting export from peer: ${peerId}`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.exportToPeer(peerId);
+      log(`Database ${dbName} received export from peer: ${peerId}`);
+      return { success: true };
+    };
+
+    // Import our data to remote peer (push our data to them)
+    window.importFromPeer = async function(dbName, peerId) {
+      log(`Database ${dbName} sending import to peer: ${peerId}`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.importFromPeer(peerId);
+      log(`Database ${dbName} sent import to peer: ${peerId}`);
+      return { success: true };
+    };
+
+    // Disconnect from a peer
+    window.disconnectFromPeer = async function(dbName, peerId) {
+      log(`Database ${dbName} disconnecting from peer: ${peerId}`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.disconnectFromPeer(peerId);
+      log(`Database ${dbName} disconnected from peer: ${peerId}`);
+      return { success: true };
+    };
+
+    // Close a database
+    window.closeDb = async function(dbName) {
+      log(`Closing database: ${dbName}`);
+      const db = window.databases.get(dbName);
+      if (db) {
+        await db.close();
+        window.databases.delete(dbName);
+        log(`Database ${dbName} closed`);
+      }
+      return { success: true };
+    };
+
+    // Signal that the page is ready
+    window.pageReady = true;
+    log('Peer test harness ready');
+  </script>
+</body>
+</html>

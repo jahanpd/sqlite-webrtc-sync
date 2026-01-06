@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SyncableDatabase Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+    .log { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>SyncableDatabase Tests</h1>
+  <div id="results"></div>
+  <script type="module">
+    import { createDatabase } from './index.js';
+
+    const results = document.getElementById('results');
+    let passed = 0;
+    let failed = 0;
+
+    function log(msg, type = 'log') {
+      const div = document.createElement('div');
+      div.className = type;
+      div.textContent = msg;
+      results.appendChild(div);
+    }
+
+    function assert(condition, message) {
+      if (!condition) {
+        throw new Error(message || 'Assertion failed');
+      }
+    }
+
+    function getRow(row) {
+      return row;
+    }
+
+    async function runTests() {
+      try {
+        log('Starting tests...', 'log');
+
+        // Test 1: Create local database
+        log('Test 1: Create local database');
+        const db1 = await createDatabase('test-local-' + Date.now(), { mode: 'local' });
+        await db1.exec('CREATE TABLE users (name TEXT, email TEXT)');
+        await db1.exec("INSERT INTO users (name, email) VALUES ('Alice', 'alice@test.com')");
+        const result1 = await db1.exec('SELECT * FROM users');
+        assert(result1.rows.length === 1, 'Should have 1 row');
+        assert(getRow(result1.rows[0]).name === 'Alice', 'Name should be Alice');
+        await db1.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        // Test 2: Auto-generate columns
+        log('Test 2: Auto-generate columns');
+        const db2 = await createDatabase('test-columns-' + Date.now(), { mode: 'local' });
+        await db2.exec('CREATE TABLE items (name TEXT, value INTEGER)');
+        await db2.exec("INSERT INTO items (name, value) VALUES ('test', 42)");
+        const result2 = await db2.exec('SELECT * FROM items');
+        assert(result2.rows.length === 1, 'Should have 1 row');
+        const row2 = getRow(result2.rows[0]);
+        assert(row2.id !== undefined, 'Should have id');
+        assert(row2.updated_at !== undefined, 'Should have updated_at');
+        assert(row2.deleted === 0, 'Should have deleted = 0');
+        await db2.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        // Test 3: UPDATE with timestamp
+        log('Test 3: UPDATE with auto-updating timestamp');
+        const db3 = await createDatabase('test-update-' + Date.now(), { mode: 'local' });
+        await db3.exec('CREATE TABLE items (name TEXT, value INTEGER)');
+        await db3.exec("INSERT INTO items (name, value) VALUES ('initial', 1)");
+        const beforeResult = await db3.exec('SELECT * FROM items');
+        const beforeTimestamp = getRow(beforeResult.rows[0]).updated_at;
+        await new Promise(resolve => setTimeout(resolve, 10));
+        await db3.exec('UPDATE items SET value = 2 WHERE name = \'initial\'');
+        const afterResult = await db3.exec('SELECT * FROM items');
+        const afterTimestamp = getRow(afterResult.rows[0]).updated_at;
+        assert(getRow(afterResult.rows[0]).value === 2, 'Value should be 2');
+        assert(afterTimestamp > beforeTimestamp, 'Timestamp should increase');
+        await db3.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        // Test 4: DELETE as soft delete
+        log('Test 4: DELETE as soft delete');
+        const db4 = await createDatabase('test-delete-' + Date.now(), { mode: 'local' });
+        await db4.exec('CREATE TABLE items (name TEXT)');
+        await db4.exec("INSERT INTO items (name) VALUES ('to-delete')");
+        let result4 = await db4.exec('SELECT * FROM items');
+        assert(result4.rows.length === 1, 'Should have 1 row before delete');
+        await db4.exec("DELETE FROM items WHERE name = 'to-delete'");
+        result4 = await db4.exec('SELECT * FROM items');
+        assert(result4.rows.length === 0, 'Should have 0 rows after delete');
+        await db4.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        // Test 5: Export and import
+        log('Test 5: Export and import database');
+        const db5a = await createDatabase('test-export-1-' + Date.now(), { mode: 'local' });
+        const db5b = await createDatabase('test-export-2-' + Date.now(), { mode: 'local' });
+        await db5a.exec('CREATE TABLE items (name TEXT)');
+        await db5a.exec("INSERT INTO items (name) VALUES ('from-db5a')");
+        const exported = await db5a.export();
+        await db5b.import(exported);
+        const result5 = await db5b.exec('SELECT * FROM items');
+        assert(result5.rows.length === 1, 'Should have 1 row');
+        assert(getRow(result5.rows[0]).name === 'from-db5a', 'Should have correct name');
+        await db5a.close();
+        await db5b.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        // Test 6: Merge with last-write-wins (same ID)
+        log('Test 6: Merge with last-write-wins (same ID)');
+        const db6a = await createDatabase('test-merge-1-' + Date.now(), { mode: 'local' });
+        const db6b = await createDatabase('test-merge-2-' + Date.now(), { mode: 'local' });
+        await db6a.exec('CREATE TABLE items (name TEXT, value INTEGER)');
+        await db6b.exec('CREATE TABLE items (name TEXT, value INTEGER)');
+        // Insert a row in db6a
+        await db6a.exec("INSERT INTO items (name, value) VALUES ('item', 1)");
+        // Export db6a and import into db6b (so they share the same row ID)
+        const db6aExport1 = await db6a.export();
+        await db6b.import(db6aExport1);
+        // Verify db6b has the row
+        const result6Before = await db6b.exec('SELECT * FROM items');
+        assert(result6Before.rows.length === 1, 'Should have 1 row after import');
+        // Now update the value in db6a (creating a newer timestamp)
+        await new Promise(resolve => setTimeout(resolve, 10));
+        await db6a.exec("UPDATE items SET value = 99 WHERE name = 'item'");
+        // Export again and merge into db6b
+        const db6aExport2 = await db6a.export();
+        await db6b.merge(db6aExport2);
+        const result6 = await db6b.exec('SELECT * FROM items');
+        assert(result6.rows.length === 1, 'Should still have 1 row after merge');
+        assert(getRow(result6.rows[0]).value === 99, 'Value should be 99 (newer from db6a)');
+        await db6a.close();
+        await db6b.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        // Test 7: Merge non-conflicting rows
+        log('Test 7: Merge non-conflicting rows');
+        const db7a = await createDatabase('test-merge-3-' + Date.now(), { mode: 'local' });
+        const db7b = await createDatabase('test-merge-4-' + Date.now(), { mode: 'local' });
+        await db7a.exec('CREATE TABLE items (name TEXT)');
+        await db7b.exec('CREATE TABLE items (name TEXT)');
+        await db7a.exec("INSERT INTO items (name) VALUES ('from-db7a')");
+        await db7b.exec("INSERT INTO items (name) VALUES ('from-db7b')");
+        const db7aData = await db7a.export();
+        await db7b.merge(db7aData);
+        const result7 = await db7b.exec('SELECT * FROM items ORDER BY name');
+        assert(result7.rows.length === 2, 'Should have 2 rows');
+        await db7a.close();
+        await db7b.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        // Test 8: Exclude deleted rows during merge
+        log('Test 8: Exclude deleted rows during merge');
+        const db8a = await createDatabase('test-merge-deleted-1-' + Date.now(), { mode: 'local' });
+        const db8b = await createDatabase('test-merge-deleted-2-' + Date.now(), { mode: 'local' });
+        await db8a.exec('CREATE TABLE items (name TEXT)');
+        await db8b.exec('CREATE TABLE items (name TEXT)');
+        await db8a.exec("INSERT INTO items (name) VALUES ('to-delete')");
+        await db8a.exec("DELETE FROM items WHERE name = 'to-delete'");
+        await db8b.exec("INSERT INTO items (name) VALUES ('keep-this')");
+        const db8aData = await db8a.export();
+        await db8b.merge(db8aData);
+        const result8 = await db8b.exec('SELECT * FROM items ORDER BY name');
+        assert(result8.rows.length === 1, 'Should have 1 row');
+        assert(getRow(result8.rows[0]).name === 'keep-this', 'Should keep only non-deleted row');
+        await db8a.close();
+        await db8b.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        // Test 9: Multiple databases
+        log('Test 9: Multiple databases');
+        const timestamp = Date.now();
+        const db9a = await createDatabase('multi-1-' + timestamp, { mode: 'local' });
+        const db9b = await createDatabase('multi-2-' + timestamp, { mode: 'local' });
+        const db9c = await createDatabase('multi-3-' + timestamp, { mode: 'local' });
+        await db9a.exec('CREATE TABLE t1 (data TEXT)');
+        await db9b.exec('CREATE TABLE t2 (data TEXT)');
+        await db9c.exec('CREATE TABLE t3 (data TEXT)');
+        await db9a.exec("INSERT INTO t1 (data) VALUES ('from-db9a')");
+        await db9b.exec("INSERT INTO t2 (data) VALUES ('from-db9b')");
+        await db9c.exec("INSERT INTO t3 (data) VALUES ('from-db9c')");
+        const r9a = await db9a.exec('SELECT * FROM t1');
+        const r9b = await db9b.exec('SELECT * FROM t2');
+        const r9c = await db9c.exec('SELECT * FROM t3');
+        assert(r9a.rows.length === 1, 'db9a should have 1 row');
+        assert(r9b.rows.length === 1, 'db9b should have 1 row');
+        assert(r9c.rows.length === 1, 'db9c should have 1 row');
+        await db9a.close();
+        await db9b.close();
+        await db9c.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        log('\nAll tests passed! (' + passed + '/' + passed + ')', 'pass');
+      } catch (error) {
+        failed++;
+        log('FAIL: ' + error.message, 'fail');
+        console.error(error);
+      }
+    }
+
+    runTests();
+  </script>
+</body>
+</html>

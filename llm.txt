@@ -1,0 +1,258 @@
+# Syncable SQLite - API Reference for LLMs
+
+This document describes the Syncable SQLite API, a browser-based SQLite database with OPFS persistence and WebRTC peer-to-peer syncing.
+
+## Overview
+
+Syncable SQLite provides:
+- SQLite database running in browser via WebAssembly
+- Persistent storage using OPFS (Origin Private File System)
+- Peer-to-peer database syncing via WebRTC
+- Automatic conflict resolution using last-write-wins strategy
+- Soft deletes for proper sync behavior
+
+## Core Concepts
+
+### Database Modes
+- `local`: Standalone database, no peer connectivity
+- `syncing`: Database with WebRTC peer-to-peer capabilities
+
+### Automatic Columns
+Every table automatically receives these columns:
+- `id` (TEXT PRIMARY KEY): Auto-generated UUID for each row
+- `updated_at` (INTEGER): Unix timestamp in milliseconds, auto-updated on INSERT/UPDATE
+- `deleted` (INTEGER): 0=active, 1=soft-deleted
+
+### SQL Rewriting
+The library automatically rewrites SQL statements:
+- INSERT: Generates id, updated_at, sets deleted=0
+- UPDATE: Updates updated_at timestamp
+- DELETE: Converts to UPDATE setting deleted=1
+- SELECT: Filters out rows where deleted=1
+
+## API
+
+### Creating a Database
+
+```javascript
+import { createDatabase } from 'syncable-sqlite';
+
+// Local mode (no syncing)
+const localDb = await createDatabase('my-local-db', { mode: 'local' });
+
+// Syncing mode with custom peer server
+const syncDb = await createDatabase('my-sync-db', {
+  mode: 'syncing',
+  peerServer: {
+    host: 'localhost',
+    port: 9000,
+    path: '/',
+    secure: false
+  }
+});
+```
+
+### Database Methods
+
+#### exec(sql: string, params?: unknown[]): Promise<QueryResult>
+Execute SQL statement. Returns { rows: object[], columns: string[] }.
+
+```javascript
+await db.exec('CREATE TABLE users (name TEXT, email TEXT)');
+await db.exec("INSERT INTO users (name, email) VALUES ('Alice', 'alice@test.com')");
+const result = await db.exec('SELECT * FROM users WHERE name = ?', ['Alice']);
+// result.rows = [{ id: 'uuid', name: 'Alice', email: 'alice@test.com', updated_at: 1234567890, deleted: 0 }]
+```
+
+#### export(): Promise<Uint8Array>
+Export database as SQL dump (CREATE TABLE + INSERT statements).
+
+```javascript
+const data = await db.export();
+```
+
+#### import(data: Uint8Array): Promise<void>
+Import SQL dump into database. Uses INSERT OR REPLACE for existing rows.
+
+```javascript
+await db.import(data);
+```
+
+#### merge(remoteData: Uint8Array): Promise<void>
+Merge remote data with last-write-wins conflict resolution.
+- Rows matched by id
+- Higher updated_at timestamp wins
+- Deleted rows excluded from results
+
+```javascript
+const remoteData = await remoteDb.export();
+await localDb.merge(remoteData);
+```
+
+#### close(): Promise<void>
+Close database, terminate worker, destroy peer connections.
+
+```javascript
+await db.close();
+```
+
+### Peer Syncing Methods (syncing mode only)
+
+#### getPeerId(): string | null
+Get this database's peer ID for sharing with other peers.
+
+```javascript
+const myPeerId = db.getPeerId();
+```
+
+#### connectToPeer(peerId: string): Promise<void>
+Establish WebRTC connection to remote peer.
+
+```javascript
+await db.connectToPeer('remote-peer-id');
+```
+
+#### disconnectFromPeer(peerId: string): Promise<void>
+Close connection to peer.
+
+```javascript
+await db.disconnectFromPeer('remote-peer-id');
+```
+
+#### getConnectedPeers(): PeerInfo[]
+List connected peers. Returns [{ id: string, status: 'connected' | 'disconnected' }].
+
+```javascript
+const peers = db.getConnectedPeers();
+```
+
+#### exportToPeer(peerId: string): Promise<void>
+Request remote peer's data and import it locally (pull).
+
+```javascript
+await db.exportToPeer('remote-peer-id');
+```
+
+#### importFromPeer(peerId: string): Promise<void>
+Send local data to remote peer (push).
+
+```javascript
+await db.importFromPeer('remote-peer-id');
+```
+
+#### exportToAllPeers(): Promise<void>
+Pull data from all connected peers.
+
+#### importFromAllPeers(): Promise<void>
+Push data to all connected peers.
+
+## Type Definitions
+
+```typescript
+type DatabaseMode = 'syncing' | 'local';
+
+interface PeerServerConfig {
+  host?: string;
+  port?: number;
+  path?: string;
+  secure?: boolean;
+}
+
+interface DatabaseConfig {
+  mode: DatabaseMode;
+  peerServer?: PeerServerConfig;
+}
+
+interface QueryResult {
+  rows: Record<string, unknown>[];
+  columns: string[];
+}
+
+interface PeerInfo {
+  id: string;
+  status: 'connecting' | 'connected' | 'disconnected';
+}
+```
+
+## Example: Two-Way Sync Between Peers
+
+```javascript
+// Peer A creates database and inserts data
+const dbA = await createDatabase('peer-a-db', { 
+  mode: 'syncing',
+  peerServer: { host: 'localhost', port: 9000, path: '/', secure: false }
+});
+await dbA.exec('CREATE TABLE items (name TEXT)');
+await dbA.exec("INSERT INTO items (name) VALUES ('item-from-a')");
+const peerIdA = dbA.getPeerId();
+
+// Peer B creates database and inserts different data
+const dbB = await createDatabase('peer-b-db', {
+  mode: 'syncing', 
+  peerServer: { host: 'localhost', port: 9000, path: '/', secure: false }
+});
+await dbB.exec('CREATE TABLE items (name TEXT)');
+await dbB.exec("INSERT INTO items (name) VALUES ('item-from-b')");
+const peerIdB = dbB.getPeerId();
+
+// Connect B to A
+await dbB.connectToPeer(peerIdA);
+
+// B pulls A's data
+await dbB.exportToPeer(peerIdA);
+
+// A pulls B's data
+await dbA.exportToPeer(peerIdB);
+
+// Both databases now have both items
+const resultA = await dbA.exec('SELECT * FROM items');
+const resultB = await dbB.exec('SELECT * FROM items');
+// Both have: 'item-from-a' and 'item-from-b'
+
+// Cleanup
+await dbA.close();
+await dbB.close();
+```
+
+## Example: Conflict Resolution
+
+```javascript
+// Both peers have same row (same id), different values
+// Peer A updates row at time T1
+// Peer B updates same row at time T2 where T2 > T1
+
+// After merge, the row with T2 (Peer B's version) wins
+// because T2 > T1 (last-write-wins)
+```
+
+## Architecture Notes
+
+- Main thread: SyncableDatabase class handles API and peer connections
+- Web Worker: Runs SQLite WASM, handles all database operations
+- OPFS: Each database stored as separate file in Origin Private File System
+- PeerJS: Handles WebRTC signaling and data channels for peer communication
+- Export format: SQL text (CREATE TABLE + INSERT statements), not binary SQLite file
+
+## Common Patterns
+
+### Initialize with error handling
+```javascript
+try {
+  const db = await createDatabase('my-db', { mode: 'syncing', peerServer: config });
+} catch (err) {
+  console.error('Failed to create database:', err);
+}
+```
+
+### Sync on connect
+```javascript
+await db.connectToPeer(remotePeerId);
+await db.exportToPeer(remotePeerId); // Pull their data
+await db.importFromPeer(remotePeerId); // Push our data
+```
+
+### Check connection status
+```javascript
+const peers = db.getConnectedPeers();
+const isConnected = peers.some(p => p.id === targetPeerId && p.status === 'connected');
+```
