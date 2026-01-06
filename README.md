@@ -200,6 +200,122 @@ await db.exportToAllPeers(); // Pull from all peers
 await db.importFromAllPeers(); // Push to all peers
 ```
 
+## Auto-Discovery & Real-Time Sync
+
+When using syncing mode with a PeerJS server that has `--allow_discovery` enabled, databases with the same name automatically discover and connect to each other.
+
+### Auto-Discovery
+
+Peer IDs are formatted as `{dbName}-{uuid}`, allowing peers sharing the same database name to automatically find each other. Discovery runs every 5 seconds by default.
+
+```javascript
+// Both instances will auto-discover each other
+const dbA = await createDatabase('shared-db', { mode: 'syncing', peerServer: config });
+const dbB = await createDatabase('shared-db', { mode: 'syncing', peerServer: config });
+
+// After ~5 seconds, they're connected automatically
+console.log(dbA.isConnected()); // true
+```
+
+### `db.discoverPeers()`
+
+Manually trigger peer discovery.
+
+```javascript
+await db.discoverPeers();
+```
+
+### `db.isConnected()`
+
+Check if connected to any peers.
+
+```javascript
+if (db.isConnected()) {
+  console.log('Connected to at least one peer');
+}
+```
+
+**Returns:** `boolean`
+
+### Real-Time Sync
+
+When connected, INSERT/UPDATE/DELETE operations are automatically broadcast to all connected peers in real-time.
+
+```javascript
+// On Peer A
+await dbA.exec("INSERT INTO items (name) VALUES ('new-item')");
+
+// Peer B automatically receives the change (no manual sync needed)
+```
+
+### Offline Queue
+
+Operations performed while disconnected are queued and can be pushed when reconnecting.
+
+### `db.getQueuedOperations()`
+
+Get pending operations in the offline queue.
+
+```javascript
+const queue = db.getQueuedOperations();
+console.log(`${queue.length} operations queued`);
+```
+
+**Returns:** `SyncOperation[]`
+
+### `db.pushQueuedOperations()`
+
+Send all queued operations to connected peers.
+
+```javascript
+// After reconnecting
+if (db.isConnected()) {
+  await db.pushQueuedOperations();
+}
+```
+
+### `db.clearQueue()`
+
+Discard all queued operations.
+
+```javascript
+db.clearQueue();
+```
+
+### Event Callbacks
+
+Register callbacks for sync events.
+
+### `db.onPeerConnected(callback)`
+
+Called when a peer connects.
+
+```javascript
+db.onPeerConnected((peerId) => {
+  console.log(`Peer connected: ${peerId}`);
+});
+```
+
+### `db.onPeerDisconnected(callback)`
+
+Called when a peer disconnects.
+
+```javascript
+db.onPeerDisconnected((peerId) => {
+  console.log(`Peer disconnected: ${peerId}`);
+});
+```
+
+### `db.onSyncReceived(callback)`
+
+Called when a sync operation is received from a peer.
+
+```javascript
+db.onSyncReceived((operation) => {
+  console.log(`Received sync: ${operation.table} - ${operation.rowId}`);
+});
+```
+
 ### `db.close()`
 
 Close the database and clean up resources.
@@ -274,8 +390,8 @@ For local development or self-hosted deployments:
 # Install
 npm install --save-dev peer
 
-# Run server
-npx peerjs --port 9000
+# Run server (with discovery enabled for auto-discovery feature)
+npx peerjs --port 9000 --allow_discovery
 ```
 
 Then configure your database:

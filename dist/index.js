@@ -6625,6 +6625,7 @@ var SyncableDatabase = class _SyncableDatabase {
   dbName;
   mode;
   peerServerConfig;
+  discoveryInterval;
   worker = null;
   peer = null;
   peerId = null;
@@ -6632,13 +6633,22 @@ var SyncableDatabase = class _SyncableDatabase {
   pendingRequests = /* @__PURE__ */ new Map();
   nextRequestId = 0;
   isInitialized = false;
-  constructor(dbName, mode, peerServerConfig) {
+  // Auto-sync properties
+  discoveryTimer = null;
+  operationQueue = [];
+  appliedOperations = /* @__PURE__ */ new Set();
+  // Event callbacks
+  onPeerConnectedCallbacks = [];
+  onPeerDisconnectedCallbacks = [];
+  onSyncReceivedCallbacks = [];
+  constructor(dbName, mode, peerServerConfig, discoveryInterval) {
     this.dbName = dbName;
     this.mode = mode;
     this.peerServerConfig = peerServerConfig;
+    this.discoveryInterval = discoveryInterval ?? 5e3;
   }
   static async create(dbName, config) {
-    const db = new _SyncableDatabase(dbName, config.mode, config.peerServer);
+    const db = new _SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval);
     await db.init();
     return db;
   }
@@ -6668,10 +6678,13 @@ var SyncableDatabase = class _SyncableDatabase {
     this.isInitialized = true;
     if (this.mode === "syncing") {
       await this.initPeer();
+      this.startDiscovery();
     }
   }
   async initPeer() {
     const { Peer } = await Promise.resolve().then(() => (init_bundler(), bundler_exports));
+    const uniqueId = crypto.randomUUID().slice(0, 8);
+    const peerIdWithPrefix = `${this.dbName}-${uniqueId}`;
     const peerOptions = {
       // Use Google STUN servers as fallback ICE servers
       config: {
@@ -6688,14 +6701,14 @@ var SyncableDatabase = class _SyncableDatabase {
       if (this.peerServerConfig.secure !== void 0) peerOptions.secure = this.peerServerConfig.secure;
     }
     await new Promise((resolve, reject) => {
-      const peer = new Peer(peerOptions);
+      const peer = new Peer(peerIdWithPrefix, peerOptions);
       peer.on("open", (id) => {
         this.peerId = id;
         this.peer = peer;
         resolve();
       });
       peer.on("connection", (conn) => {
-        this.handleConnection(conn);
+        this.handleIncomingConnection(conn);
       });
       peer.on("error", (err) => {
         console.error("Peer error:", err);
@@ -6703,26 +6716,62 @@ var SyncableDatabase = class _SyncableDatabase {
       });
     });
   }
-  handleConnection(conn) {
+  startDiscovery() {
+    this.discoveryTimer = setInterval(() => {
+      this.discoverPeers().catch((err) => {
+        console.error("Discovery error:", err);
+      });
+    }, this.discoveryInterval);
+    this.discoverPeers().catch((err) => {
+      console.error("Initial discovery error:", err);
+    });
+  }
+  async discoverPeers() {
+    if (this.mode !== "syncing" || !this.peerServerConfig) {
+      return;
+    }
+    try {
+      const protocol = this.peerServerConfig.secure ? "https" : "http";
+      const host = this.peerServerConfig.host || "localhost";
+      const port = this.peerServerConfig.port || 9e3;
+      const path = this.peerServerConfig.path || "/";
+      const url = `${protocol}://${host}:${port}${path}peerjs/peers`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        return;
+      }
+      const allPeers = await response.json();
+      const dbPrefix = `${this.dbName}-`;
+      const sameDatabasePeers = allPeers.filter(
+        (id) => id.startsWith(dbPrefix) && id !== this.peerId
+      );
+      for (const remotePeerId of sameDatabasePeers) {
+        if (!this.peers.has(remotePeerId)) {
+          try {
+            await this.connectToPeer(remotePeerId);
+          } catch (err) {
+            console.error(`Failed to connect to discovered peer ${remotePeerId}:`, err);
+          }
+        }
+      }
+    } catch (err) {
+    }
+  }
+  handleIncomingConnection(conn) {
     const peerId = conn.peer;
     conn.on("open", () => {
-      this.peers.set(peerId, new PeerConnection(peerId, conn, this));
-    });
-    conn.on("data", async (data) => {
-      const msg = data;
-      if (msg.type === "exportRequest") {
-        const exportData = await this.export();
-        conn.send({ type: "exportData", data: Array.from(exportData) });
-      } else if (msg.type === "importData" && msg.data) {
-        await this.import(new Uint8Array(msg.data));
-      }
+      const peerConn = new PeerConnection(peerId, conn, this);
+      this.peers.set(peerId, peerConn);
+      this.emitPeerConnected(peerId);
     });
     conn.on("close", () => {
       this.peers.delete(peerId);
+      this.emitPeerDisconnected(peerId);
     });
     conn.on("error", (err) => {
       console.error("Connection error:", err);
       this.peers.delete(peerId);
+      this.emitPeerDisconnected(peerId);
     });
   }
   sendRequest(type, dbName, args) {
@@ -6737,7 +6786,38 @@ var SyncableDatabase = class _SyncableDatabase {
       throw new Error("Database not initialized");
     }
     const result = await this.sendRequest("exec", this.dbName, [sql, params]);
+    if (this.mode === "syncing" && result.affectedRows && result.affectedRows.length > 0) {
+      const processedSql = await this.sendRequest("getLastProcessedSql", this.dbName, []);
+      for (const affected of result.affectedRows) {
+        const operation = {
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          sql: processedSql,
+          table: affected.table,
+          rowId: affected.id
+        };
+        this.broadcastOperation(operation);
+      }
+    }
     return result;
+  }
+  broadcastOperation(operation) {
+    this.appliedOperations.add(operation.id);
+    if (this.peers.size === 0) {
+      this.operationQueue.push(operation);
+      return;
+    }
+    for (const peerConn of this.peers.values()) {
+      peerConn.sendOperation(operation);
+    }
+  }
+  async applyRemoteOperation(operation) {
+    if (this.appliedOperations.has(operation.id)) {
+      return;
+    }
+    this.appliedOperations.add(operation.id);
+    await this.sendRequest("execRaw", this.dbName, [operation.sql]);
+    this.emitSyncReceived(operation);
   }
   async export() {
     if (!this.isInitialized) {
@@ -6759,13 +6839,22 @@ var SyncableDatabase = class _SyncableDatabase {
     if (!this.peer) {
       throw new Error("Peer not initialized");
     }
+    if (peerId === this.peerId) {
+      return;
+    }
+    if (this.peers.has(peerId)) {
+      return;
+    }
     const conn = this.peer.connect(peerId);
     await new Promise((resolve, reject) => {
       conn.on("open", () => {
-        this.peers.set(peerId, new PeerConnection(peerId, conn, this));
+        const peerConn = new PeerConnection(peerId, conn, this);
+        this.peers.set(peerId, peerConn);
+        this.emitPeerConnected(peerId);
         resolve();
       });
       conn.on("error", reject);
+      setTimeout(() => reject(new Error("Connection timeout")), 1e4);
     });
   }
   async disconnectFromPeer(peerId) {
@@ -6773,6 +6862,7 @@ var SyncableDatabase = class _SyncableDatabase {
     if (peerConnection) {
       peerConnection.close();
       this.peers.delete(peerId);
+      this.emitPeerDisconnected(peerId);
     }
   }
   async exportToPeer(peerId) {
@@ -6820,7 +6910,70 @@ var SyncableDatabase = class _SyncableDatabase {
       status: p.isConnected() ? "connected" : "disconnected"
     }));
   }
+  isConnected() {
+    return this.peers.size > 0;
+  }
+  // Offline queue management
+  getQueuedOperations() {
+    return [...this.operationQueue];
+  }
+  async pushQueuedOperations() {
+    if (this.peers.size === 0) {
+      throw new Error("No peers connected");
+    }
+    for (const operation of this.operationQueue) {
+      for (const peerConn of this.peers.values()) {
+        peerConn.sendOperation(operation);
+      }
+    }
+    this.operationQueue = [];
+  }
+  clearQueue() {
+    this.operationQueue = [];
+  }
+  // Event registration
+  onPeerConnected(callback) {
+    this.onPeerConnectedCallbacks.push(callback);
+  }
+  onPeerDisconnected(callback) {
+    this.onPeerDisconnectedCallbacks.push(callback);
+  }
+  onSyncReceived(callback) {
+    this.onSyncReceivedCallbacks.push(callback);
+  }
+  // Event emitters
+  emitPeerConnected(peerId) {
+    for (const cb of this.onPeerConnectedCallbacks) {
+      try {
+        cb(peerId);
+      } catch (e) {
+        console.error("Callback error:", e);
+      }
+    }
+  }
+  emitPeerDisconnected(peerId) {
+    for (const cb of this.onPeerDisconnectedCallbacks) {
+      try {
+        cb(peerId);
+      } catch (e) {
+        console.error("Callback error:", e);
+      }
+    }
+  }
+  emitSyncReceived(operation) {
+    for (const cb of this.onSyncReceivedCallbacks) {
+      try {
+        cb(operation);
+      } catch (e) {
+        console.error("Callback error:", e);
+      }
+    }
+  }
   async close() {
+    if (this.discoveryTimer) {
+      clearInterval(this.discoveryTimer);
+      this.discoveryTimer = null;
+    }
     for (const peerConn of this.peers.values()) {
       peerConn.close();
     }
@@ -6847,7 +7000,9 @@ var PeerConnection = class {
     this.db = db;
     this.connection.on("data", async (data) => {
       const msg = data;
-      if (msg.type === "exportData" && msg.data) {
+      if (msg.type === "sync-operation" && msg.operation) {
+        await this.db.applyRemoteOperation(msg.operation);
+      } else if (msg.type === "exportData" && msg.data) {
         const dataArray = new Uint8Array(msg.data);
         await this.db.import(dataArray);
         this.pendingExport?.resolve();
@@ -6855,6 +7010,8 @@ var PeerConnection = class {
       } else if (msg.type === "exportRequest") {
         const exportData = await this.db.export();
         this.connection.send({ type: "exportData", data: Array.from(exportData) });
+      } else if (msg.type === "importData" && msg.data) {
+        await this.db.import(new Uint8Array(msg.data));
       }
     });
     this.connection.on("close", () => {
@@ -6865,6 +7022,11 @@ var PeerConnection = class {
       this.pendingExport?.reject(err);
       this.pendingImport?.reject(err);
     });
+  }
+  sendOperation(operation) {
+    if (this.connection.open) {
+      this.connection.send({ type: "sync-operation", operation });
+    }
   }
   async requestExport() {
     if (!this.connection.open) {

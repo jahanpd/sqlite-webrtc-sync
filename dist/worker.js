@@ -11544,6 +11544,8 @@ var sqlite_wasm_default = sqlite3_default;
 var OPFS_VFS = "opfs";
 var sqlite3 = null;
 var databases = /* @__PURE__ */ new Map();
+var lastProcessedSql = /* @__PURE__ */ new Map();
+var lastAffectedRows = /* @__PURE__ */ new Map();
 async function initSqlite() {
   const module = await sqlite_wasm_default({
     print: console.log,
@@ -11687,7 +11689,7 @@ function injectColumns(sql) {
 function rewriteInsert(sql, tableName) {
   const insertMatch = sql.match(/INSERT\s+INTO\s+["`]?(\w+)["`]?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i);
   if (!insertMatch) {
-    return { sql, params: [] };
+    return { sql, params: [], rowId: "" };
   }
   const originalColumns = insertMatch[2].split(",").map((c) => c.trim());
   const values = insertMatch[3].split(",").map((c) => c.trim());
@@ -11705,7 +11707,7 @@ function rewriteInsert(sql, tableName) {
   const newColumns = [...userColumns, "id", "updated_at", "deleted"].join(", ");
   const newValues = [...userValues, `'${uuid}'`, String(timestamp), "0"].join(", ");
   const newSql = `INSERT INTO ${tableName} (${newColumns}) VALUES (${newValues})`;
-  return { sql: newSql, params: [] };
+  return { sql: newSql, params: [], rowId: uuid };
 }
 function rewriteUpdate(sql, tableName) {
   const updateMatch = sql.match(/UPDATE\s+["`]?(\w+)["`]?\s+SET\s+([^W]+)(?:\s+WHERE\s+(.+))?/i);
@@ -11750,22 +11752,41 @@ function processSql(sql) {
   if (upperSql.startsWith("INSERT")) {
     const insertMatch = sql.match(/INSERT\s+INTO\s+["`]?(\w+)["`]?/i);
     if (insertMatch) {
-      return rewriteInsert(sql, insertMatch[1]);
+      const result = rewriteInsert(sql, insertMatch[1]);
+      return {
+        sql: result.sql,
+        params: result.params,
+        table: insertMatch[1],
+        rowId: result.rowId,
+        isMutation: true
+      };
     }
   }
   if (upperSql.startsWith("UPDATE")) {
     const updateMatch = sql.match(/UPDATE\s+["`]?(\w+)["`]?/i);
     if (updateMatch) {
-      return rewriteUpdate(sql, updateMatch[1]);
+      const result = rewriteUpdate(sql, updateMatch[1]);
+      return {
+        sql: result.sql,
+        params: result.params,
+        table: updateMatch[1],
+        isMutation: true
+      };
     }
   }
   if (upperSql.startsWith("DELETE")) {
     const deleteMatch = sql.match(/DELETE\s+FROM\s+["`]?(\w+)["`]?/i);
     if (deleteMatch) {
-      return rewriteDelete(sql, deleteMatch[1]);
+      const result = rewriteDelete(sql, deleteMatch[1]);
+      return {
+        sql: result.sql,
+        params: result.params,
+        table: deleteMatch[1],
+        isMutation: true
+      };
     }
   }
-  return { sql: rewriteQuery(sql), params: [] };
+  return { sql: rewriteQuery(sql), params: [], isMutation: false };
 }
 async function mergeDatabasesAsync(localDb, remoteData, sqlite3Module) {
   const tempDb = new sqlite3Module.oo1.DB(":memory:");
@@ -11868,10 +11889,35 @@ async function handleRequest(request) {
         const injectResult = injectColumns(sql);
         if (!injectResult.hasUserColumns && injectResult.sql !== sql) {
           db.exec(injectResult.sql);
-          result = { rows: [], columns: [] };
+          lastProcessedSql.set(dbName, injectResult.sql);
+          lastAffectedRows.set(dbName, []);
+          result = { rows: [], columns: [], affectedRows: [] };
         } else {
-          const { sql: processedSql } = processSql(sql);
-          result = execute(db, processedSql, params);
+          const processed = processSql(sql);
+          lastProcessedSql.set(dbName, processed.sql);
+          if (processed.isMutation && processed.table) {
+            let affectedIds = [];
+            if (processed.rowId) {
+              affectedIds = [processed.rowId];
+            } else {
+              const whereMatch = sql.match(/WHERE\s+(.+)$/i);
+              if (whereMatch) {
+                const selectSql = `SELECT id FROM ${processed.table} WHERE ${whereMatch[1]}`;
+                try {
+                  const idsResult = execute(db, selectSql);
+                  affectedIds = idsResult.rows.map((r) => r.id).filter(Boolean);
+                } catch (e) {
+                }
+              }
+            }
+            const execResult = execute(db, processed.sql, params);
+            const affectedRows = affectedIds.map((id2) => ({ id: id2, table: processed.table }));
+            lastAffectedRows.set(dbName, affectedRows);
+            result = { ...execResult, affectedRows };
+          } else {
+            lastAffectedRows.set(dbName, []);
+            result = execute(db, processed.sql, params);
+          }
         }
         break;
       }
@@ -11919,6 +11965,21 @@ async function handleRequest(request) {
         const remoteData = new Uint8Array(args[0]);
         await mergeDatabasesAsync(db, remoteData, sqlite3);
         result = { success: true };
+        break;
+      }
+      case "execRaw": {
+        const db = databases.get(dbName);
+        if (!db) throw new Error(`Database ${dbName} not found`);
+        let sql = args[0];
+        if (sql.toUpperCase().trim().startsWith("INSERT INTO")) {
+          sql = sql.replace(/^INSERT\s+INTO/i, "INSERT OR REPLACE INTO");
+        }
+        db.exec(sql);
+        result = { success: true };
+        break;
+      }
+      case "getLastProcessedSql": {
+        result = lastProcessedSql.get(dbName) || "";
         break;
       }
       default:

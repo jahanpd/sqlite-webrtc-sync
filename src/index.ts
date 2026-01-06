@@ -10,17 +10,37 @@ export interface PeerServerConfig {
 export interface DatabaseConfig {
   mode: DatabaseMode;
   peerServer?: PeerServerConfig;
+  discoveryInterval?: number;  // ms, default 5000
 }
 
 export interface QueryResult {
   rows: Record<string, unknown>[];
   columns: string[];
+  affectedRows?: AffectedRow[];  // For mutations, includes row IDs
+}
+
+export interface AffectedRow {
+  id: string;
+  table: string;
 }
 
 export interface PeerInfo {
   id: string;
   status: 'connecting' | 'connected' | 'disconnected';
 }
+
+export interface SyncOperation {
+  id: string;           // Unique operation ID
+  timestamp: number;    // For ordering
+  sql: string;          // The processed SQL statement
+  table: string;        // Affected table
+  rowId: string;        // Affected row ID
+}
+
+// Event callback types
+type PeerConnectedCallback = (peerId: string) => void;
+type PeerDisconnectedCallback = (peerId: string) => void;
+type SyncReceivedCallback = (operation: SyncOperation) => void;
 
 interface WorkerMessage {
   id: number;
@@ -34,6 +54,7 @@ export class SyncableDatabase {
   private dbName: string;
   private mode: DatabaseMode;
   private peerServerConfig?: PeerServerConfig;
+  private discoveryInterval: number;
   private worker: Worker | null = null;
   private peer: import('peerjs').Peer | null = null;
   private peerId: string | null = null;
@@ -41,15 +62,26 @@ export class SyncableDatabase {
   private pendingRequests: Map<number, { resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = new Map();
   private nextRequestId = 0;
   private isInitialized = false;
+  
+  // Auto-sync properties
+  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private operationQueue: SyncOperation[] = [];
+  private appliedOperations: Set<string> = new Set();
+  
+  // Event callbacks
+  private onPeerConnectedCallbacks: PeerConnectedCallback[] = [];
+  private onPeerDisconnectedCallbacks: PeerDisconnectedCallback[] = [];
+  private onSyncReceivedCallbacks: SyncReceivedCallback[] = [];
 
-  private constructor(dbName: string, mode: DatabaseMode, peerServerConfig?: PeerServerConfig) {
+  private constructor(dbName: string, mode: DatabaseMode, peerServerConfig?: PeerServerConfig, discoveryInterval?: number) {
     this.dbName = dbName;
     this.mode = mode;
     this.peerServerConfig = peerServerConfig;
+    this.discoveryInterval = discoveryInterval ?? 5000;
   }
 
   static async create(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase> {
-    const db = new SyncableDatabase(dbName, config.mode, config.peerServer);
+    const db = new SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval);
     await db.init();
     return db;
   }
@@ -87,11 +119,16 @@ export class SyncableDatabase {
 
     if (this.mode === 'syncing') {
       await this.initPeer();
+      this.startDiscovery();
     }
   }
 
   private async initPeer(): Promise<void> {
     const { Peer } = await import('peerjs');
+    
+    // Generate peer ID with database name prefix for discovery
+    const uniqueId = crypto.randomUUID().slice(0, 8);
+    const peerIdWithPrefix = `${this.dbName}-${uniqueId}`;
     
     // Build PeerJS options
     const peerOptions: import('peerjs').PeerOptions = {
@@ -114,7 +151,7 @@ export class SyncableDatabase {
     
     // Create peer and wait for it to be ready
     await new Promise<void>((resolve, reject) => {
-      const peer = new Peer(peerOptions);
+      const peer = new Peer(peerIdWithPrefix, peerOptions);
       
       peer.on('open', (id: string) => {
         this.peerId = id;
@@ -123,7 +160,7 @@ export class SyncableDatabase {
       });
 
       peer.on('connection', (conn: import('peerjs').DataConnection) => {
-        this.handleConnection(conn);
+        this.handleIncomingConnection(conn);
       });
 
       peer.on('error', (err: Error) => {
@@ -133,30 +170,80 @@ export class SyncableDatabase {
     });
   }
 
-  private handleConnection(conn: import('peerjs').DataConnection): void {
+  private startDiscovery(): void {
+    // Start periodic peer discovery
+    this.discoveryTimer = setInterval(() => {
+      this.discoverPeers().catch(err => {
+        console.error('Discovery error:', err);
+      });
+    }, this.discoveryInterval);
+    
+    // Also run discovery immediately
+    this.discoverPeers().catch(err => {
+      console.error('Initial discovery error:', err);
+    });
+  }
+
+  async discoverPeers(): Promise<void> {
+    if (this.mode !== 'syncing' || !this.peerServerConfig) {
+      return;
+    }
+    
+    try {
+      // Query PeerJS server for all connected peers
+      const protocol = this.peerServerConfig.secure ? 'https' : 'http';
+      const host = this.peerServerConfig.host || 'localhost';
+      const port = this.peerServerConfig.port || 9000;
+      const path = this.peerServerConfig.path || '/';
+      
+      const url = `${protocol}://${host}:${port}${path}peerjs/peers`;
+      const response = await fetch(url);
+      
+      if (!response.ok) {
+        return;
+      }
+      
+      const allPeers: string[] = await response.json();
+      
+      // Filter peers that share our database name prefix
+      const dbPrefix = `${this.dbName}-`;
+      const sameDatabasePeers = allPeers.filter(id => 
+        id.startsWith(dbPrefix) && id !== this.peerId
+      );
+      
+      // Connect to any peers we're not already connected to
+      for (const remotePeerId of sameDatabasePeers) {
+        if (!this.peers.has(remotePeerId)) {
+          try {
+            await this.connectToPeer(remotePeerId);
+          } catch (err) {
+            console.error(`Failed to connect to discovered peer ${remotePeerId}:`, err);
+          }
+        }
+      }
+    } catch (err) {
+      // Discovery failed - might be network issue, continue silently
+    }
+  }
+
+  private handleIncomingConnection(conn: import('peerjs').DataConnection): void {
     const peerId = conn.peer;
     
     conn.on('open', () => {
-      this.peers.set(peerId, new PeerConnection(peerId, conn, this));
-    });
-
-    conn.on('data', async (data: unknown) => {
-      const msg = data as { type: string; data?: number[] };
-      if (msg.type === 'exportRequest') {
-        const exportData = await this.export();
-        conn.send({ type: 'exportData', data: Array.from(exportData) });
-      } else if (msg.type === 'importData' && msg.data) {
-        await this.import(new Uint8Array(msg.data));
-      }
+      const peerConn = new PeerConnection(peerId, conn, this);
+      this.peers.set(peerId, peerConn);
+      this.emitPeerConnected(peerId);
     });
 
     conn.on('close', () => {
       this.peers.delete(peerId);
+      this.emitPeerDisconnected(peerId);
     });
 
     conn.on('error', (err: Error) => {
       console.error('Connection error:', err);
       this.peers.delete(peerId);
+      this.emitPeerDisconnected(peerId);
     });
   }
 
@@ -172,8 +259,59 @@ export class SyncableDatabase {
     if (!this.isInitialized) {
       throw new Error('Database not initialized');
     }
+    
     const result = await this.sendRequest('exec', this.dbName, [sql, params]) as QueryResult;
+    
+    // If this is a mutation in syncing mode, broadcast to peers
+    if (this.mode === 'syncing' && result.affectedRows && result.affectedRows.length > 0) {
+      const processedSql = (await this.sendRequest('getLastProcessedSql', this.dbName, [])) as string;
+      
+      for (const affected of result.affectedRows) {
+        const operation: SyncOperation = {
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          sql: processedSql,
+          table: affected.table,
+          rowId: affected.id,
+        };
+        
+        this.broadcastOperation(operation);
+      }
+    }
+    
     return result;
+  }
+
+  private broadcastOperation(operation: SyncOperation): void {
+    // Mark as applied locally
+    this.appliedOperations.add(operation.id);
+    
+    if (this.peers.size === 0) {
+      // No peers connected, queue the operation
+      this.operationQueue.push(operation);
+      return;
+    }
+    
+    // Broadcast to all connected peers
+    for (const peerConn of this.peers.values()) {
+      peerConn.sendOperation(operation);
+    }
+  }
+
+  async applyRemoteOperation(operation: SyncOperation): Promise<void> {
+    // Check if already applied
+    if (this.appliedOperations.has(operation.id)) {
+      return;
+    }
+    
+    // Mark as applied
+    this.appliedOperations.add(operation.id);
+    
+    // Execute the SQL directly without reprocessing
+    await this.sendRequest('execRaw', this.dbName, [operation.sql]);
+    
+    // Emit callback
+    this.emitSyncReceived(operation);
   }
 
   async export(): Promise<Uint8Array> {
@@ -188,7 +326,6 @@ export class SyncableDatabase {
     if (!this.isInitialized) {
       throw new Error('Database not initialized');
     }
-    // Pass the array as a single argument wrapped in args array
     await this.sendRequest('import', this.dbName, [Array.from(data)]);
   }
 
@@ -200,15 +337,30 @@ export class SyncableDatabase {
     if (!this.peer) {
       throw new Error('Peer not initialized');
     }
+    
+    // Don't connect to ourselves
+    if (peerId === this.peerId) {
+      return;
+    }
+    
+    // Don't reconnect if already connected
+    if (this.peers.has(peerId)) {
+      return;
+    }
 
     const conn = this.peer.connect(peerId);
     
     await new Promise<void>((resolve, reject) => {
       conn.on('open', () => {
-        this.peers.set(peerId, new PeerConnection(peerId, conn, this));
+        const peerConn = new PeerConnection(peerId, conn, this);
+        this.peers.set(peerId, peerConn);
+        this.emitPeerConnected(peerId);
         resolve();
       });
       conn.on('error', reject);
+      
+      // Add timeout
+      setTimeout(() => reject(new Error('Connection timeout')), 10000);
     });
   }
 
@@ -217,6 +369,7 @@ export class SyncableDatabase {
     if (peerConnection) {
       peerConnection.close();
       this.peers.delete(peerId);
+      this.emitPeerDisconnected(peerId);
     }
   }
 
@@ -271,8 +424,75 @@ export class SyncableDatabase {
       status: p.isConnected() ? 'connected' : 'disconnected',
     }));
   }
+  
+  isConnected(): boolean {
+    return this.peers.size > 0;
+  }
+  
+  // Offline queue management
+  getQueuedOperations(): SyncOperation[] {
+    return [...this.operationQueue];
+  }
+  
+  async pushQueuedOperations(): Promise<void> {
+    if (this.peers.size === 0) {
+      throw new Error('No peers connected');
+    }
+    
+    // Send all queued operations to all peers
+    for (const operation of this.operationQueue) {
+      for (const peerConn of this.peers.values()) {
+        peerConn.sendOperation(operation);
+      }
+    }
+    
+    // Clear the queue
+    this.operationQueue = [];
+  }
+  
+  clearQueue(): void {
+    this.operationQueue = [];
+  }
+  
+  // Event registration
+  onPeerConnected(callback: PeerConnectedCallback): void {
+    this.onPeerConnectedCallbacks.push(callback);
+  }
+  
+  onPeerDisconnected(callback: PeerDisconnectedCallback): void {
+    this.onPeerDisconnectedCallbacks.push(callback);
+  }
+  
+  onSyncReceived(callback: SyncReceivedCallback): void {
+    this.onSyncReceivedCallbacks.push(callback);
+  }
+  
+  // Event emitters
+  private emitPeerConnected(peerId: string): void {
+    for (const cb of this.onPeerConnectedCallbacks) {
+      try { cb(peerId); } catch (e) { console.error('Callback error:', e); }
+    }
+  }
+  
+  private emitPeerDisconnected(peerId: string): void {
+    for (const cb of this.onPeerDisconnectedCallbacks) {
+      try { cb(peerId); } catch (e) { console.error('Callback error:', e); }
+    }
+  }
+  
+  private emitSyncReceived(operation: SyncOperation): void {
+    for (const cb of this.onSyncReceivedCallbacks) {
+      try { cb(operation); } catch (e) { console.error('Callback error:', e); }
+    }
+  }
 
   async close(): Promise<void> {
+    // Stop discovery
+    if (this.discoveryTimer) {
+      clearInterval(this.discoveryTimer);
+      this.discoveryTimer = null;
+    }
+    
     for (const peerConn of this.peers.values()) {
       peerConn.close();
     }
@@ -304,8 +524,12 @@ class PeerConnection {
     this.db = db;
 
     this.connection.on('data', async (data: unknown) => {
-      const msg = data as { type: string; data?: number[] };
-      if (msg.type === 'exportData' && msg.data) {
+      const msg = data as { type: string; data?: number[]; operation?: SyncOperation };
+      
+      if (msg.type === 'sync-operation' && msg.operation) {
+        // Real-time sync: apply remote operation
+        await this.db.applyRemoteOperation(msg.operation);
+      } else if (msg.type === 'exportData' && msg.data) {
         const dataArray = new Uint8Array(msg.data);
         await this.db.import(dataArray);
         this.pendingExport?.resolve();
@@ -313,6 +537,8 @@ class PeerConnection {
       } else if (msg.type === 'exportRequest') {
         const exportData = await this.db.export();
         this.connection.send({ type: 'exportData', data: Array.from(exportData) });
+      } else if (msg.type === 'importData' && msg.data) {
+        await this.db.import(new Uint8Array(msg.data));
       }
     });
 
@@ -325,6 +551,12 @@ class PeerConnection {
       this.pendingExport?.reject(err);
       this.pendingImport?.reject(err);
     });
+  }
+  
+  sendOperation(operation: SyncOperation): void {
+    if (this.connection.open) {
+      this.connection.send({ type: 'sync-operation', operation });
+    }
   }
 
   async requestExport(): Promise<void> {

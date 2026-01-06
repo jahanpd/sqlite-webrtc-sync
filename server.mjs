@@ -1,3 +1,7 @@
+import { createServer } from 'http';
+import { readFile, stat } from 'fs/promises';
+import { join, extname } from 'path';
+
 const PORT = process.env.PORT || 3000;
 
 const mimeTypes = {
@@ -11,43 +15,40 @@ const mimeTypes = {
   '.d.ts': 'application/typescript',
 };
 
-Bun.serve({
-  port: PORT,
-  async fetch(request) {
-    const url = new URL(request.url);
-    let pathname = url.pathname;
+const server = createServer(async (req, res) => {
+  let pathname = new URL(req.url, `http://localhost:${PORT}`).pathname;
 
-    if (pathname === '/') {
-      pathname = '/index.html';
-    }
+  if (pathname === '/') {
+    pathname = '/index.html';
+  }
 
-    const filePath = `./dist${pathname}`;
+  const filePath = join(process.cwd(), 'dist', pathname);
 
-    try {
-      const file = Bun.file(filePath);
-      const exists = await file.exists();
+  try {
+    await stat(filePath);
+    const data = await readFile(filePath);
 
-      if (!exists) {
-        return new Response('Not Found', { status: 404 });
-      }
+    const ext = extname(pathname);
+    const contentType = mimeTypes[ext] || 'application/octet-stream';
 
-      const ext = pathname.substring(pathname.lastIndexOf('.'));
-      const contentType = mimeTypes[ext] || 'application/octet-stream';
-
-      const response = new Response(file, {
-        headers: {
-          'Content-Type': contentType,
-          'Cross-Origin-Embedder-Policy': 'require-corp',
-          'Cross-Origin-Opener-Policy': 'same-origin',
-        },
-      });
-
-      return response;
-    } catch (error) {
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Opener-Policy': 'same-origin',
+    });
+    res.end(data);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      res.writeHead(404);
+      res.end('Not Found');
+    } else {
       console.error('Error serving file:', error);
-      return new Response('Internal Server Error', { status: 500 });
+      res.writeHead(500);
+      res.end('Internal Server Error');
     }
-  },
+  }
 });
 
-console.log(`Server running at http://localhost:${PORT}`);
+server.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}`);
+});

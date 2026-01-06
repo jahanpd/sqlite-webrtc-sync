@@ -135,6 +135,83 @@
       return { success: true };
     };
 
+    // Check if connected to any peers
+    window.isConnected = function(dbName) {
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      return db.isConnected();
+    };
+
+    // Get queued operations (offline queue)
+    window.getQueuedOperations = function(dbName) {
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      return db.getQueuedOperations();
+    };
+
+    // Push queued operations to all connected peers
+    window.pushQueuedOperations = async function(dbName) {
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.pushQueuedOperations();
+      log(`Database ${dbName} pushed queued operations`);
+      return { success: true };
+    };
+
+    // Clear the offline queue
+    window.clearQueue = function(dbName) {
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      db.clearQueue();
+      log(`Database ${dbName} cleared queue`);
+      return { success: true };
+    };
+
+    // Manually trigger peer discovery
+    window.discoverPeers = async function(dbName) {
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.discoverPeers();
+      log(`Database ${dbName} ran peer discovery`);
+      return { success: true };
+    };
+
+    // Register event callbacks - stores callbacks on window for testing
+    window.syncEvents = new Map();
+
+    window.registerSyncCallback = function(dbName) {
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      
+      const events = { 
+        peerConnected: [], 
+        peerDisconnected: [], 
+        syncReceived: [] 
+      };
+      window.syncEvents.set(dbName, events);
+      
+      db.onPeerConnected((peerId) => {
+        log(`[Event] ${dbName}: peer connected - ${peerId}`);
+        events.peerConnected.push(peerId);
+      });
+      
+      db.onPeerDisconnected((peerId) => {
+        log(`[Event] ${dbName}: peer disconnected - ${peerId}`);
+        events.peerDisconnected.push(peerId);
+      });
+      
+      db.onSyncReceived((operation) => {
+        log(`[Event] ${dbName}: sync received - ${operation.table}:${operation.rowId}`);
+        events.syncReceived.push(operation);
+      });
+      
+      return { success: true };
+    };
+
+    window.getSyncEvents = function(dbName) {
+      return window.syncEvents.get(dbName) || { peerConnected: [], peerDisconnected: [], syncReceived: [] };
+    };
+
     // Signal that the page is ready
     window.pageReady = true;
     log('Peer test harness ready');

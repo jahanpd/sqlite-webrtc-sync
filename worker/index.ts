@@ -5,6 +5,10 @@ const OPFS_VFS = 'opfs';
 let sqlite3: any = null;
 const databases = new Map<string, any>();
 
+// Track last processed SQL and affected rows for sync
+const lastProcessedSql = new Map<string, string>();
+const lastAffectedRows = new Map<string, { id: string; table: string }[]>();
+
 type SQLiteRequest = {
   id: number;
   type: string;
@@ -129,6 +133,7 @@ function initializeSchema(db: any): void {
 interface QueryResult {
   rows: unknown[];
   columns: string[];
+  affectedRows?: { id: string; table: string }[];
 }
 
 function execute(db: any, sql: string, params?: unknown[]): QueryResult {
@@ -210,11 +215,11 @@ function injectColumns(sql: string): { sql: string; hasUserColumns: boolean } {
   return { sql: newSql, hasUserColumns: false };
 }
 
-function rewriteInsert(sql: string, tableName: string): { sql: string; params: unknown[] } {
+function rewriteInsert(sql: string, tableName: string): { sql: string; params: unknown[]; rowId: string } {
   const insertMatch = sql.match(/INSERT\s+INTO\s+["`]?(\w+)["`]?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i);
   
   if (!insertMatch) {
-    return { sql, params: [] };
+    return { sql, params: [], rowId: '' };
   }
   
   const originalColumns = insertMatch[2].split(',').map(c => c.trim());
@@ -241,7 +246,7 @@ function rewriteInsert(sql: string, tableName: string): { sql: string; params: u
   
   const newSql = `INSERT INTO ${tableName} (${newColumns}) VALUES (${newValues})`;
   
-  return { sql: newSql, params: [] };
+  return { sql: newSql, params: [], rowId: uuid };
 }
 
 function rewriteUpdate(sql: string, tableName: string): { sql: string; params: unknown[] } {
@@ -296,31 +301,58 @@ function rewriteQuery(sql: string): string {
   });
 }
 
-function processSql(sql: string): { sql: string; params: unknown[] } {
+interface ProcessedSql {
+  sql: string;
+  params: unknown[];
+  table?: string;
+  rowId?: string;
+  isMutation: boolean;
+}
+
+function processSql(sql: string): ProcessedSql {
   const upperSql = sql.toUpperCase().trim();
   
   if (upperSql.startsWith('INSERT')) {
     const insertMatch = sql.match(/INSERT\s+INTO\s+["`]?(\w+)["`]?/i);
     if (insertMatch) {
-      return rewriteInsert(sql, insertMatch[1]);
+      const result = rewriteInsert(sql, insertMatch[1]);
+      return { 
+        sql: result.sql, 
+        params: result.params, 
+        table: insertMatch[1], 
+        rowId: result.rowId,
+        isMutation: true 
+      };
     }
   }
   
   if (upperSql.startsWith('UPDATE')) {
     const updateMatch = sql.match(/UPDATE\s+["`]?(\w+)["`]?/i);
     if (updateMatch) {
-      return rewriteUpdate(sql, updateMatch[1]);
+      const result = rewriteUpdate(sql, updateMatch[1]);
+      return { 
+        sql: result.sql, 
+        params: result.params, 
+        table: updateMatch[1],
+        isMutation: true 
+      };
     }
   }
   
   if (upperSql.startsWith('DELETE')) {
     const deleteMatch = sql.match(/DELETE\s+FROM\s+["`]?(\w+)["`]?/i);
     if (deleteMatch) {
-      return rewriteDelete(sql, deleteMatch[1]);
+      const result = rewriteDelete(sql, deleteMatch[1]);
+      return { 
+        sql: result.sql, 
+        params: result.params, 
+        table: deleteMatch[1],
+        isMutation: true 
+      };
     }
   }
   
-  return { sql: rewriteQuery(sql), params: [] };
+  return { sql: rewriteQuery(sql), params: [], isMutation: false };
 }
 
 async function mergeDatabasesAsync(localDb: any, remoteData: Uint8Array, sqlite3Module: any): Promise<void> {
@@ -454,11 +486,49 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
         const injectResult = injectColumns(sql);
         
         if (!injectResult.hasUserColumns && injectResult.sql !== sql) {
+          // CREATE TABLE - no affected rows
           db.exec(injectResult.sql);
-          result = { rows: [], columns: [] };
+          lastProcessedSql.set(dbName, injectResult.sql);
+          lastAffectedRows.set(dbName, []);
+          result = { rows: [], columns: [], affectedRows: [] };
         } else {
-          const { sql: processedSql } = processSql(sql);
-          result = execute(db, processedSql, params);
+          const processed = processSql(sql);
+          lastProcessedSql.set(dbName, processed.sql);
+          
+          if (processed.isMutation && processed.table) {
+            // For UPDATE/DELETE, we need to find affected row IDs before executing
+            let affectedIds: string[] = [];
+            
+            if (processed.rowId) {
+              // INSERT - we have the new row ID
+              affectedIds = [processed.rowId];
+            } else {
+              // UPDATE/DELETE - query for affected IDs first
+              const whereMatch = sql.match(/WHERE\s+(.+)$/i);
+              if (whereMatch) {
+                const selectSql = `SELECT id FROM ${processed.table} WHERE ${whereMatch[1]}`;
+                try {
+                  const idsResult = execute(db, selectSql);
+                  affectedIds = idsResult.rows.map((r: any) => r.id).filter(Boolean);
+                } catch (e) {
+                  // Ignore errors finding affected rows
+                }
+              }
+            }
+            
+            // Execute the mutation
+            const execResult = execute(db, processed.sql, params);
+            
+            // Set affected rows
+            const affectedRows = affectedIds.map(id => ({ id, table: processed.table! }));
+            lastAffectedRows.set(dbName, affectedRows);
+            
+            result = { ...execResult, affectedRows };
+          } else {
+            // SELECT query
+            lastAffectedRows.set(dbName, []);
+            result = execute(db, processed.sql, params);
+          }
         }
         break;
       }
@@ -512,6 +582,25 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
         const remoteData = new Uint8Array(args[0] as number[]);
         await mergeDatabasesAsync(db, remoteData, sqlite3);
         result = { success: true };
+        break;
+      }
+      
+      case 'execRaw': {
+        // Execute SQL without any rewriting - used for applying remote sync operations
+        const db = databases.get(dbName);
+        if (!db) throw new Error(`Database ${dbName} not found`);
+        let sql = args[0] as string;
+        // For INSERT statements, use INSERT OR REPLACE to handle conflicts
+        if (sql.toUpperCase().trim().startsWith('INSERT INTO')) {
+          sql = sql.replace(/^INSERT\s+INTO/i, 'INSERT OR REPLACE INTO');
+        }
+        db.exec(sql);
+        result = { success: true };
+        break;
+      }
+      
+      case 'getLastProcessedSql': {
+        result = lastProcessedSql.get(dbName) || '';
         break;
       }
       

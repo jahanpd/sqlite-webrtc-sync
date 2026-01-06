@@ -146,6 +146,70 @@ Pull data from all connected peers.
 #### importFromAllPeers(): Promise<void>
 Push data to all connected peers.
 
+### Auto-Discovery Methods (syncing mode only)
+
+#### discoverPeers(): Promise<void>
+Manually trigger peer discovery. Queries PeerJS server for peers with same database name prefix.
+
+```javascript
+await db.discoverPeers();
+```
+
+#### isConnected(): boolean
+Check if connected to any peers.
+
+```javascript
+if (db.isConnected()) {
+  console.log('Has peer connections');
+}
+```
+
+### Offline Queue Methods (syncing mode only)
+
+#### getQueuedOperations(): SyncOperation[]
+Get operations queued while offline.
+
+```javascript
+const queue = db.getQueuedOperations();
+```
+
+#### pushQueuedOperations(): Promise<void>
+Send queued operations to all connected peers. Throws if no peers connected.
+
+```javascript
+await db.pushQueuedOperations();
+```
+
+#### clearQueue(): void
+Discard all queued operations.
+
+```javascript
+db.clearQueue();
+```
+
+### Event Callbacks (syncing mode only)
+
+#### onPeerConnected(callback: (peerId: string) => void): void
+Register callback for peer connection events.
+
+```javascript
+db.onPeerConnected((peerId) => console.log('Connected:', peerId));
+```
+
+#### onPeerDisconnected(callback: (peerId: string) => void): void
+Register callback for peer disconnection events.
+
+```javascript
+db.onPeerDisconnected((peerId) => console.log('Disconnected:', peerId));
+```
+
+#### onSyncReceived(callback: (operation: SyncOperation) => void): void
+Register callback for incoming sync operations.
+
+```javascript
+db.onSyncReceived((op) => console.log('Sync received:', op.table, op.rowId));
+```
+
 ## Type Definitions
 
 ```typescript
@@ -161,6 +225,7 @@ interface PeerServerConfig {
 interface DatabaseConfig {
   mode: DatabaseMode;
   peerServer?: PeerServerConfig;
+  discoveryInterval?: number;  // ms, default 5000
 }
 
 interface QueryResult {
@@ -172,9 +237,59 @@ interface PeerInfo {
   id: string;
   status: 'connecting' | 'connected' | 'disconnected';
 }
+
+interface SyncOperation {
+  id: string;           // Unique operation ID
+  timestamp: number;    // For ordering
+  sql: string;          // The processed SQL statement
+  table: string;        // Affected table
+  rowId: string;        // Affected row ID
+}
 ```
 
-## Example: Two-Way Sync Between Peers
+## Example: Auto-Discovery and Real-Time Sync
+
+```javascript
+// Both peers use the SAME database name - they auto-discover each other
+const dbA = await createDatabase('shared-app', {
+  mode: 'syncing',
+  peerServer: { host: 'localhost', port: 9000, path: '/', secure: false }
+});
+
+const dbB = await createDatabase('shared-app', {
+  mode: 'syncing',
+  peerServer: { host: 'localhost', port: 9000, path: '/', secure: false }
+});
+
+// Create same table on both
+await dbA.exec('CREATE TABLE IF NOT EXISTS items (name TEXT)');
+await dbB.exec('CREATE TABLE IF NOT EXISTS items (name TEXT)');
+
+// Register event callbacks
+dbB.onSyncReceived((op) => {
+  console.log('B received sync:', op.sql);
+});
+
+// Wait for auto-discovery (~5 seconds)
+await new Promise(r => setTimeout(r, 6000));
+
+// Now they're connected
+console.log(dbA.isConnected()); // true
+console.log(dbB.isConnected()); // true
+
+// Real-time sync: INSERT on A automatically appears on B
+await dbA.exec("INSERT INTO items (name) VALUES ('from-a')");
+
+// B gets the data automatically (onSyncReceived callback fires)
+await new Promise(r => setTimeout(r, 1000));
+const result = await dbB.exec('SELECT * FROM items');
+// result.rows includes 'from-a'
+
+await dbA.close();
+await dbB.close();
+```
+
+## Example: Two-Way Sync Between Peers (Manual)
 
 ```javascript
 // Peer A creates database and inserts data
@@ -232,6 +347,9 @@ await dbB.close();
 - OPFS: Each database stored as separate file in Origin Private File System
 - PeerJS: Handles WebRTC signaling and data channels for peer communication
 - Export format: SQL text (CREATE TABLE + INSERT statements), not binary SQLite file
+- Auto-discovery: Peer IDs use format `{dbName}-{uuid}` for prefix-based discovery
+- Real-time sync: Mutations broadcast to all connected peers immediately
+- Offline queue: Operations queued in-memory when no peers connected
 
 ## Common Patterns
 
@@ -255,4 +373,27 @@ await db.importFromPeer(remotePeerId); // Push our data
 ```javascript
 const peers = db.getConnectedPeers();
 const isConnected = peers.some(p => p.id === targetPeerId && p.status === 'connected');
+```
+
+### Handle offline operations
+```javascript
+// Perform operations while offline (they get queued)
+await db.exec("INSERT INTO items (name) VALUES ('offline-item')");
+
+// Later, when reconnected
+if (db.isConnected()) {
+  await db.pushQueuedOperations();  // Send queued ops to peers
+}
+```
+
+### React to sync events
+```javascript
+db.onPeerConnected((peerId) => {
+  console.log('New peer connected');
+});
+
+db.onSyncReceived((operation) => {
+  // Update UI when remote changes arrive
+  refreshUI();
+});
 ```
