@@ -1,0 +1,34 @@
+// Context and Provider
+export { DatabaseProvider, useDatabaseContext, useDB } from './context';
+
+// Hooks
+export { useDatabase } from './hooks/useDatabase';
+export { useQuery } from './hooks/useQuery';
+export { useMutation } from './hooks/useMutation';
+export { useSyncStatus } from './hooks/useSyncStatus';
+export { usePeers } from './hooks/usePeers';
+
+// Types
+export type {
+  DatabaseProviderProps,
+  DatabaseContextValue,
+  QueryResult,
+  MutationResult,
+  SyncStatus,
+  PeersResult,
+  WhereClause,
+  OrderByClause,
+} from './types';
+
+// Re-export schema types for convenience
+export type {
+  Schema,
+  SchemaDef,
+  TableDef,
+  InferRow,
+  InferSchema,
+  InsertData,
+  UpdateData,
+  TableNames,
+  RowType,
+} from '../schema';

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function build() {
+  // Main database bundle
   await esbuild.build({
     entryPoints: ['src/index.ts'],
     bundle: true,
@@ -16,6 +17,7 @@ async function build() {
     // peerjs is bundled for browser use
   });
 
+  // Worker bundle
   await esbuild.build({
     entryPoints: ['worker/index.ts'],
     bundle: true,
@@ -25,10 +27,48 @@ async function build() {
     target: 'es2022',
   });
 
+  // Schema bundle (no React dependency)
+  await esbuild.build({
+    entryPoints: ['src/schema/index.ts'],
+    bundle: true,
+    outfile: 'dist/schema.js',
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+  });
+
+  // React bundle (React as external peer dependency)
+  await esbuild.build({
+    entryPoints: ['src/react/index.ts'],
+    bundle: true,
+    outfile: 'dist/react.js',
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+    external: ['react', 'react-dom'],
+    // Include JSX transform
+    jsx: 'automatic',
+  });
+
   copyWASMFiles();
   copySqliteWasmPackage();
+  await generateTypeDeclarations();
 
   console.log('Build complete!');
+}
+
+async function generateTypeDeclarations() {
+  // Run tsc to generate .d.ts files
+  const { execSync } = await import('child_process');
+  try {
+    execSync('npx tsc --emitDeclarationOnly --declaration --outDir dist', { 
+      stdio: 'inherit',
+      cwd: __dirname 
+    });
+    console.log('Generated type declarations');
+  } catch (e) {
+    console.warn('Could not generate type declarations:', e.message);
+  }
 }
 
 function copyWASMFiles() {

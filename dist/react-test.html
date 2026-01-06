@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>React Integration Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+    .log { color: #666; margin: 2px 0; }
+    #results { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>React Integration Tests</h1>
+  <div id="root"></div>
+  <div id="results"></div>
+  
+  <!-- Import React and ReactDOM from CDN for testing -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  
+  <script type="module">
+    import { defineSchema, defineTable, column } from './schema.js';
+    import { 
+      DatabaseProvider, 
+      useQuery, 
+      useMutation, 
+      useSyncStatus,
+      useDatabase 
+    } from './react.js';
+
+    const { useState, useEffect } = React;
+    
+    // Test results
+    const results = [];
+    let testCount = 0;
+    let passCount = 0;
+
+    function log(msg) {
+      console.log(msg);
+      const div = document.createElement('div');
+      div.className = 'log';
+      div.textContent = msg;
+      document.getElementById('results').appendChild(div);
+    }
+
+    function assert(condition, testName) {
+      testCount++;
+      if (condition) {
+        passCount++;
+        log(`PASS: ${testName}`);
+        results.push({ name: testName, passed: true });
+      } else {
+        log(`FAIL: ${testName}`);
+        results.push({ name: testName, passed: false });
+      }
+    }
+
+    // Define test schema
+    const schema = defineSchema({
+      todos: defineTable({
+        title: column.text(),
+        completed: column.boolean(),
+        priority: column.integer().optional(),
+      }),
+    });
+
+    // Test Component 1: Basic query and mutation
+    function TodoApp({ onTestComplete }) {
+      const { data, isLoading, error, refetch } = useQuery('test-db', 'todos').exec();
+      const { insert, update, remove, isLoading: mutating } = useMutation('test-db', 'todos');
+      const db = useDatabase('test-db');
+      const [testPhase, setTestPhase] = useState(0);
+      const [insertedId, setInsertedId] = useState(null);
+
+      useEffect(() => {
+        async function runTests() {
+          try {
+            // Phase 0: Wait for initial load
+            if (testPhase === 0 && !isLoading) {
+              assert(Array.isArray(data), 'Initial query returns array');
+              assert(db !== null, 'useDatabase returns database instance');
+              setTestPhase(1);
+            }
+            
+            // Phase 1: Insert
+            if (testPhase === 1) {
+              const newTodo = await insert({ title: 'Test Todo', completed: false });
+              assert(typeof newTodo.id === 'string', 'Insert returns row with id');
+              assert(newTodo.title === 'Test Todo', 'Insert returns row with correct title');
+              assert(newTodo.completed === 0 || newTodo.completed === false, 'Insert returns row with correct completed');
+              assert(typeof newTodo.updated_at === 'number', 'Insert returns row with updated_at');
+              setInsertedId(newTodo.id);
+              setTestPhase(2);
+            }
+            
+            // Phase 2: Wait for query to update after insert
+            if (testPhase === 2 && data && data.length > 0) {
+              assert(data.some(t => t.title === 'Test Todo'), 'Query updates after insert');
+              setTestPhase(3);
+            }
+            
+            // Phase 3: Update
+            if (testPhase === 3 && insertedId) {
+              const updated = await update(insertedId, { completed: true });
+              assert(updated.completed === 1 || updated.completed === true, 'Update returns updated row');
+              setTestPhase(4);
+            }
+            
+            // Phase 4: Wait for query to update after update
+            if (testPhase === 4 && data) {
+              const todo = data.find(t => t.id === insertedId);
+              if (todo && (todo.completed === 1 || todo.completed === true)) {
+                assert(true, 'Query updates after update');
+                setTestPhase(5);
+              }
+            }
+            
+            // Phase 5: Remove
+            if (testPhase === 5 && insertedId) {
+              const removed = await remove(insertedId);
+              assert(removed.id === insertedId, 'Remove returns removed row');
+              setTestPhase(6);
+            }
+            
+            // Phase 6: Wait for query to update after remove
+            if (testPhase === 6 && data) {
+              const todo = data.find(t => t.id === insertedId);
+              if (!todo) {
+                assert(true, 'Query updates after remove (soft delete)');
+                setTestPhase(7);
+              }
+            }
+            
+            // Phase 7: Complete
+            if (testPhase === 7) {
+              onTestComplete(results);
+            }
+            
+          } catch (err) {
+            log(`ERROR: ${err.message}`);
+            results.push({ name: 'Test error', passed: false, error: err.message });
+            onTestComplete(results);
+          }
+        }
+        
+        runTests();
+      }, [testPhase, isLoading, data, insertedId]);
+
+      return React.createElement('div', null,
+        React.createElement('p', null, `Phase: ${testPhase}, Loading: ${isLoading}, Data: ${data?.length ?? 0} items`),
+        error && React.createElement('p', { style: { color: 'red' } }, `Error: ${error.message}`)
+      );
+    }
+
+    // Main test runner
+    function TestRunner() {
+      const [complete, setComplete] = useState(false);
+      const [testResults, setTestResults] = useState(null);
+
+      const handleTestComplete = (results) => {
+        setTestResults(results);
+        setComplete(true);
+        
+        // Expose results for Playwright
+        window.testResults = {
+          total: results.length,
+          passed: results.filter(r => r.passed).length,
+          failed: results.filter(r => !r.passed).length,
+          results: results
+        };
+        window.testsComplete = true;
+        
+        log('');
+        log(`Tests complete: ${window.testResults.passed}/${window.testResults.total} passed`);
+      };
+
+      if (complete) {
+        return React.createElement('div', null,
+          React.createElement('h2', null, 'Tests Complete'),
+          React.createElement('p', null, `${testResults.filter(r => r.passed).length} / ${testResults.length} tests passed`)
+        );
+      }
+
+      return React.createElement(
+        DatabaseProvider,
+        {
+          name: 'test-db',
+          schema: schema,
+          mode: 'local'
+        },
+        React.createElement(TodoApp, { onTestComplete: handleTestComplete })
+      );
+    }
+
+    // Mount the test app
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(TestRunner));
+
+    // Mark page as ready
+    window.pageReady = true;
+  </script>
+</body>
+</html>
