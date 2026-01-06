@@ -10,6 +10,28 @@ Syncable SQLite provides:
 - Peer-to-peer database syncing via WebRTC
 - Automatic conflict resolution using last-write-wins strategy
 - Soft deletes for proper sync behavior
+- React integration with typed hooks (useQuery, useMutation, etc.)
+- Schema-driven TypeScript types
+
+## Package Exports
+
+```javascript
+// Core database API
+import { createDatabase } from 'syncable-sqlite';
+
+// Schema definition
+import { defineSchema, defineTable, column } from 'syncable-sqlite/schema';
+
+// React hooks
+import { 
+  DatabaseProvider, 
+  useQuery, 
+  useMutation, 
+  useSyncStatus, 
+  usePeers, 
+  useDatabase 
+} from 'syncable-sqlite/react';
+```
 
 ## Core Concepts
 
@@ -396,4 +418,303 @@ db.onSyncReceived((operation) => {
   // Update UI when remote changes arrive
   refreshUI();
 });
+```
+
+---
+
+## Schema Definition API
+
+The schema system provides TypeScript-first database schema definition with automatic type inference.
+
+### Defining a Schema
+
+```typescript
+import { defineSchema, defineTable, column } from 'syncable-sqlite/schema';
+
+const schema = defineSchema({
+  todos: defineTable({
+    title: column.text(),
+    completed: column.boolean(),
+    priority: column.integer().optional(),
+  }),
+  users: defineTable({
+    name: column.text(),
+    email: column.text(),
+    age: column.integer().optional(),
+  }),
+});
+```
+
+### Column Types
+
+| Method | SQLite Type | TypeScript Type |
+|--------|-------------|-----------------|
+| `column.text()` | TEXT | `string` |
+| `column.integer()` | INTEGER | `number` |
+| `column.real()` | REAL | `number` |
+| `column.boolean()` | INTEGER (0/1) | `boolean` |
+| `column.blob()` | BLOB | `Uint8Array` |
+
+All columns support `.optional()` for nullable values:
+```typescript
+column.text().optional()  // string | null
+```
+
+### Schema Methods
+
+```typescript
+// Generate CREATE TABLE SQL for all tables
+const sqlStatements: string[] = schema.toSQL();
+
+// Get SQL for a specific table
+const sql: string = schema.getTableSQL('todos');
+```
+
+### Type Inference
+
+The schema automatically infers row types including system columns:
+
+```typescript
+// Inferred type for a todo row:
+type Todo = {
+  id: string;           // System column (auto-generated UUID)
+  title: string;
+  completed: boolean;
+  priority: number | null;
+  updated_at: number;   // System column (Unix timestamp ms)
+  deleted: number;      // System column (0=active, 1=deleted)
+}
+```
+
+---
+
+## React API
+
+### DatabaseProvider
+
+Context provider that initializes the database and schema.
+
+```tsx
+import { DatabaseProvider } from 'syncable-sqlite/react';
+
+<DatabaseProvider
+  name="my-app"           // Unique database name (required)
+  schema={schema}         // Schema definition (required)
+  mode="syncing"          // 'local' | 'syncing' (required)
+  peerServer={{           // Required if mode='syncing'
+    host: 'localhost',
+    port: 9000,
+    path: '/',
+    secure: false,
+  }}
+  discoveryInterval={5000} // Optional, default 5000ms
+>
+  {children}
+</DatabaseProvider>
+```
+
+On mount, DatabaseProvider:
+1. Creates the database
+2. Runs `CREATE TABLE IF NOT EXISTS` for all tables in schema
+3. Sets up sync event listeners (in syncing mode)
+
+### useQuery(dbName, tableName)
+
+Reactive query hook with builder pattern. Returns typed results.
+
+```tsx
+const { data, isLoading, error, refetch } = useQuery('my-app', 'todos')
+  .where('completed', '=', false)      // WHERE clause
+  .where('priority', '>=', 1)          // Multiple = AND
+  .orderBy('updated_at', 'desc')       // ORDER BY
+  .limit(10)                           // LIMIT
+  .exec();                             // Execute and subscribe
+
+// data: Todo[] | undefined
+// isLoading: boolean
+// error: Error | null
+// refetch: () => Promise<void>
+```
+
+**Supported where operators:** `=`, `!=`, `>`, `<`, `>=`, `<=`, `LIKE`, `IN`
+
+**Reactivity:** Queries automatically re-run when:
+- Local mutations affect the table
+- Remote sync operations affect the table
+- `refetch()` is called
+
+### useMutation(dbName, tableName)
+
+Mutation hook for insert, update, remove operations.
+
+```tsx
+const { insert, update, remove, isLoading, error } = useMutation('my-app', 'todos');
+
+// Insert - returns full row with generated id
+const newTodo = await insert({ title: 'Test', completed: false });
+// newTodo: { id: 'uuid', title: 'Test', completed: false, updated_at: ..., deleted: 0 }
+
+// Update - returns updated row
+const updated = await update(todoId, { completed: true });
+
+// Remove (soft delete) - returns removed row
+const removed = await remove(todoId);
+```
+
+All mutations automatically invalidate related queries.
+
+### useSyncStatus(dbName)
+
+Monitor sync connection status.
+
+```tsx
+const {
+  isConnected,        // boolean
+  peerCount,          // number
+  pendingOperations,  // number (offline queue size)
+  peerId,             // string | null
+  mode,               // 'syncing' | 'local'
+} = useSyncStatus('my-app');
+```
+
+### usePeers(dbName)
+
+Manage peer connections.
+
+```tsx
+const {
+  peers,              // PeerInfo[]
+  connectToPeer,      // (peerId: string) => Promise<void>
+  disconnectFromPeer, // (peerId: string) => Promise<void>
+  pushQueue,          // () => Promise<void>
+  clearQueue,         // () => void
+} = usePeers('my-app');
+```
+
+### useDatabase(dbName)
+
+Direct access to the SyncableDatabase instance.
+
+```tsx
+const db = useDatabase('my-app');
+const data = await db.export();
+await db.import(data);
+```
+
+---
+
+## React Example: Full App
+
+```tsx
+import { defineSchema, defineTable, column } from 'syncable-sqlite/schema';
+import { 
+  DatabaseProvider, 
+  useQuery, 
+  useMutation, 
+  useSyncStatus 
+} from 'syncable-sqlite/react';
+
+// Schema
+const schema = defineSchema({
+  todos: defineTable({
+    title: column.text(),
+    completed: column.boolean(),
+  }),
+});
+
+// Sync status component
+function SyncBadge() {
+  const { isConnected, peerCount } = useSyncStatus('app');
+  return <span>{isConnected ? `🟢 ${peerCount}` : '🔴'}</span>;
+}
+
+// Todo list with reactive query
+function TodoList() {
+  const { data, isLoading } = useQuery('app', 'todos')
+    .where('completed', '=', false)
+    .orderBy('updated_at', 'desc')
+    .exec();
+
+  const { insert, update, remove } = useMutation('app', 'todos');
+
+  if (isLoading) return <div>Loading...</div>;
+
+  return (
+    <div>
+      <button onClick={() => insert({ title: 'New', completed: false })}>
+        Add
+      </button>
+      {data?.map(todo => (
+        <div key={todo.id}>
+          <span>{todo.title}</span>
+          <button onClick={() => update(todo.id, { completed: true })}>
+            Done
+          </button>
+          <button onClick={() => remove(todo.id)}>Delete</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// App with provider
+function App() {
+  return (
+    <DatabaseProvider
+      name="app"
+      schema={schema}
+      mode="syncing"
+      peerServer={{ host: 'localhost', port: 9000, path: '/', secure: false }}
+    >
+      <SyncBadge />
+      <TodoList />
+    </DatabaseProvider>
+  );
+}
+```
+
+## React Type Definitions
+
+```typescript
+interface DatabaseProviderProps<S extends SchemaDef> {
+  name: string;
+  schema: Schema<S>;
+  mode: 'syncing' | 'local';
+  peerServer?: PeerServerConfig;
+  discoveryInterval?: number;
+  children: React.ReactNode;
+}
+
+interface QueryResult<T> {
+  data: T[] | undefined;
+  isLoading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+
+interface MutationResult<Row> {
+  insert: (data: InsertData<Row>) => Promise<Row>;
+  update: (id: string, data: Partial<InsertData<Row>>) => Promise<Row>;
+  remove: (id: string) => Promise<Row>;
+  isLoading: boolean;
+  error: Error | null;
+}
+
+interface SyncStatus {
+  isConnected: boolean;
+  peerCount: number;
+  pendingOperations: number;
+  peerId: string | null;
+  mode: 'syncing' | 'local';
+}
+
+interface PeersResult {
+  peers: PeerInfo[];
+  connectToPeer: (peerId: string) => Promise<void>;
+  disconnectFromPeer: (peerId: string) => Promise<void>;
+  pushQueue: () => Promise<void>;
+  clearQueue: () => void;
+}
+
+// InsertData<Row> = Omit<Row, 'id' | 'updated_at' | 'deleted'>
 ```

@@ -10,11 +10,26 @@ A browser-based SQLite database with OPFS persistence and WebRTC peer-to-peer sy
 - **Automatic schema** - Tables automatically get `id`, `updated_at`, and `deleted` columns
 - **Last-write-wins merge** - Conflict resolution based on timestamps
 - **Soft deletes** - Deleted rows are marked, not removed, enabling proper sync
+- **React integration** - Fully typed hooks with reactive queries and mutations
+- **Schema-driven types** - Define your schema once, get TypeScript types everywhere
 
 ## Installation
 
 ```bash
 npm install syncable-sqlite
+
+# For React integration, ensure React 18+ is installed
+npm install react react-dom
+```
+
+### Installing from GitHub
+
+```bash
+# Install directly from GitHub
+npm install github:your-username/syncable-sqlite
+
+# Or with a specific branch/tag
+npm install github:your-username/syncable-sqlite#main
 ```
 
 ## Quick Start
@@ -434,6 +449,286 @@ npx playwright test
   - Web Workers
   - OPFS (Origin Private File System)
   - WebRTC (for syncing mode)
+
+## React Integration
+
+Syncable SQLite provides a complete React integration with typed hooks for queries, mutations, and sync status.
+
+### Quick Start with React
+
+```tsx
+import { defineSchema, defineTable, column } from 'syncable-sqlite/schema';
+import { DatabaseProvider, useQuery, useMutation } from 'syncable-sqlite/react';
+
+// 1. Define your schema
+const schema = defineSchema({
+  todos: defineTable({
+    title: column.text(),
+    completed: column.boolean(),
+    priority: column.integer().optional(),
+  }),
+});
+
+// 2. Wrap your app with DatabaseProvider
+function App() {
+  return (
+    <DatabaseProvider 
+      name="my-app" 
+      schema={schema} 
+      mode="local"
+    >
+      <TodoList />
+    </DatabaseProvider>
+  );
+}
+
+// 3. Use hooks in your components
+function TodoList() {
+  const { data, isLoading } = useQuery('my-app', 'todos')
+    .where('completed', '=', false)
+    .orderBy('updated_at', 'desc')
+    .exec();
+
+  const { insert } = useMutation('my-app', 'todos');
+
+  if (isLoading) return <div>Loading...</div>;
+
+  return (
+    <div>
+      <button onClick={() => insert({ title: 'New Todo', completed: false })}>
+        Add Todo
+      </button>
+      <ul>
+        {data?.map(todo => (
+          <li key={todo.id}>{todo.title}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+### Schema Definition
+
+Define your database schema with full TypeScript support:
+
+```typescript
+import { defineSchema, defineTable, column } from 'syncable-sqlite/schema';
+
+const schema = defineSchema({
+  users: defineTable({
+    name: column.text(),
+    email: column.text(),
+    age: column.integer().optional(),  // Nullable column
+    active: column.boolean(),
+  }),
+  posts: defineTable({
+    title: column.text(),
+    content: column.text(),
+    authorId: column.text(),
+  }),
+});
+
+// TypeScript infers the full row type including system columns:
+// {
+//   id: string;
+//   name: string;
+//   email: string;
+//   age: number | null;
+//   active: boolean;
+//   updated_at: number;
+//   deleted: number;
+// }
+```
+
+**Available column types:**
+
+| Method | SQLite Type | TypeScript Type |
+|--------|-------------|-----------------|
+| `column.text()` | TEXT | `string` |
+| `column.integer()` | INTEGER | `number` |
+| `column.real()` | REAL | `number` |
+| `column.boolean()` | INTEGER | `boolean` |
+| `column.blob()` | BLOB | `Uint8Array` |
+
+All columns support `.optional()` for nullable values.
+
+### DatabaseProvider
+
+Wrap your app with `DatabaseProvider` to initialize the database:
+
+```tsx
+import { DatabaseProvider } from 'syncable-sqlite/react';
+
+<DatabaseProvider
+  name="my-app"           // Unique database name
+  schema={schema}         // Your schema definition
+  mode="syncing"          // 'local' or 'syncing'
+  peerServer={{           // Required for syncing mode
+    host: 'localhost',
+    port: 9000,
+    path: '/',
+    secure: false,
+  }}
+>
+  <App />
+</DatabaseProvider>
+```
+
+**Multiple databases:** Nest providers for multiple databases:
+
+```tsx
+<DatabaseProvider name="app-db" schema={appSchema} mode="syncing" peerServer={config}>
+  <DatabaseProvider name="cache" schema={cacheSchema} mode="local">
+    <App />
+  </DatabaseProvider>
+</DatabaseProvider>
+```
+
+### useQuery Hook
+
+Reactive queries with a builder pattern:
+
+```tsx
+import { useQuery } from 'syncable-sqlite/react';
+
+function MyComponent() {
+  const { data, isLoading, error, refetch } = useQuery('my-app', 'todos')
+    .where('completed', '=', false)      // WHERE clause
+    .where('priority', '>', 1)           // Multiple WHERE = AND
+    .orderBy('updated_at', 'desc')       // ORDER BY
+    .limit(10)                           // LIMIT
+    .exec();                             // Execute query
+
+  // data is typed as Todo[] | undefined
+  // Automatically re-fetches when data changes (local or remote)
+}
+```
+
+**Supported operators:** `=`, `!=`, `>`, `<`, `>=`, `<=`, `LIKE`, `IN`
+
+### useMutation Hook
+
+Insert, update, and remove with full type safety:
+
+```tsx
+import { useMutation } from 'syncable-sqlite/react';
+
+function AddTodo() {
+  const { insert, update, remove, isLoading, error } = useMutation('my-app', 'todos');
+
+  // Insert returns the full row with generated id
+  const handleAdd = async () => {
+    const newTodo = await insert({ 
+      title: 'Buy groceries', 
+      completed: false 
+    });
+    console.log('Created:', newTodo.id);
+  };
+
+  // Update by id, returns updated row
+  const handleComplete = async (id: string) => {
+    const updated = await update(id, { completed: true });
+  };
+
+  // Remove (soft delete), returns removed row
+  const handleDelete = async (id: string) => {
+    const removed = await remove(id);
+  };
+}
+```
+
+### useSyncStatus Hook
+
+Monitor connection and sync status:
+
+```tsx
+import { useSyncStatus } from 'syncable-sqlite/react';
+
+function SyncIndicator() {
+  const { 
+    isConnected,        // boolean - any peers connected?
+    peerCount,          // number - count of connected peers
+    pendingOperations,  // number - queued offline operations
+    peerId,             // string | null - this database's peer ID
+    mode                // 'syncing' | 'local'
+  } = useSyncStatus('my-app');
+
+  return (
+    <div>
+      {isConnected ? `🟢 ${peerCount} peers` : '🔴 Offline'}
+      {pendingOperations > 0 && ` (${pendingOperations} pending)`}
+    </div>
+  );
+}
+```
+
+### usePeers Hook
+
+Manage peer connections:
+
+```tsx
+import { usePeers } from 'syncable-sqlite/react';
+
+function PeerManager() {
+  const { 
+    peers,              // PeerInfo[] - list of connected peers
+    connectToPeer,      // (peerId: string) => Promise<void>
+    disconnectFromPeer, // (peerId: string) => Promise<void>
+    pushQueue,          // () => Promise<void> - push offline queue
+    clearQueue          // () => void - discard offline queue
+  } = usePeers('my-app');
+
+  return (
+    <div>
+      <h3>Connected Peers</h3>
+      <ul>
+        {peers.map(peer => (
+          <li key={peer.id}>
+            {peer.id} ({peer.status})
+            <button onClick={() => disconnectFromPeer(peer.id)}>
+              Disconnect
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+### useDatabase Hook
+
+Direct access to the database instance:
+
+```tsx
+import { useDatabase } from 'syncable-sqlite/react';
+
+function ExportButton() {
+  const db = useDatabase('my-app');
+
+  const handleExport = async () => {
+    const data = await db.export();
+    // Save to file, send to server, etc.
+  };
+
+  return <button onClick={handleExport}>Export Database</button>;
+}
+```
+
+### Reactivity
+
+Queries automatically re-run when:
+- **Local mutations** - `insert`, `update`, `remove` invalidate related queries
+- **Remote sync** - Changes from peers trigger query refresh
+- **Manual refetch** - Call `refetch()` to manually refresh
+
+```tsx
+// This query automatically updates when:
+// 1. You call insert/update/remove on 'todos'
+// 2. A connected peer modifies 'todos'
+const { data, refetch } = useQuery('my-app', 'todos').exec();
+```
 
 ## License
 
