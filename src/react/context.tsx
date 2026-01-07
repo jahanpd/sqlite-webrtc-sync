@@ -114,11 +114,7 @@ export function DatabaseProvider<S extends SchemaDef>({
   const Context = getOrCreateContext(name);
 
   if (error) {
-    throw error; // Let error boundary handle it
-  }
-
-  if (!contextValue) {
-    return null; // Loading
+    throw error;
   }
 
   return (
@@ -134,7 +130,7 @@ export function DatabaseProvider<S extends SchemaDef>({
  */
 export function useDatabaseContext<S extends SchemaDef = SchemaDef>(
   dbName?: string
-): DatabaseContextValue<S> {
+): DatabaseContextValue<S> | null {
   // If no name provided, try to find a context
   // This is a simplified approach - walks up looking for any database context
   
@@ -156,10 +152,7 @@ export function useDatabaseContext<S extends SchemaDef = SchemaDef>(
 
   const context = useContext(Context);
   if (!context) {
-    throw new Error(
-      `No DatabaseProvider found for "${dbName}". ` +
-      'Make sure to wrap your component tree with <DatabaseProvider name="${dbName}" ...>'
-    );
+    return null;
   }
 
   return context as DatabaseContextValue<S>;
@@ -178,15 +171,20 @@ export function useDatabaseContext<S extends SchemaDef = SchemaDef>(
  */
 export function useDB<S extends SchemaDef>(dbName: string) {
   const context = useDatabaseContext<S>(dbName);
-  
+
+  if (!context) {
+    return {
+      instance: null,
+      name: dbName,
+      schema: null,
+      _store: null,
+    };
+  }
+
   return {
-    /** Raw database instance */
     instance: context.db,
-    /** Database name */
     name: context.name,
-    /** Schema */
     schema: context.schema,
-    /** Query store (internal) */
     _store: context.store,
   };
 }

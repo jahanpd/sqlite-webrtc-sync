@@ -90,6 +90,16 @@ function useQueryExec<S extends SchemaDef, T extends TableNames<S>>(
   options: QueryBuilderOptions
 ): QueryResult<InferRow<S[T]>> {
   const context = useDatabaseContext<S>(dbName);
+
+  if (!context) {
+    return {
+      data: undefined,
+      isLoading: true,
+      error: null,
+      refetch: async () => {},
+    };
+  }
+
   const { db, store } = context;
   
   const [data, setData] = useState<InferRow<S[T]>[] | undefined>(undefined);

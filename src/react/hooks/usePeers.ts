@@ -41,6 +41,17 @@ import type { PeersResult } from '../types';
  */
 export function usePeers(dbName: string): PeersResult {
   const context = useDatabaseContext(dbName);
+
+  if (!context) {
+    return {
+      peers: [],
+      connectToPeer: async () => { throw new Error('Database still initializing'); },
+      disconnectFromPeer: async () => { throw new Error('Database still initializing'); },
+      pushQueue: async () => { throw new Error('Database still initializing'); },
+      clearQueue: () => {},
+    };
+  }
+
   const { db } = context;
   
   const [peers, setPeers] = useState<PeerInfo[]>(() => 

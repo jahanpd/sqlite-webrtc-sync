@@ -36,6 +36,17 @@ export function useMutation<S extends SchemaDef, T extends TableNames<S>>(
   tableName: T
 ): MutationResult<InferRow<S[T]>> {
   const context = useDatabaseContext<S>(dbName);
+
+  if (!context) {
+    return {
+      insert: async () => { throw new Error('Database still initializing'); },
+      update: async () => { throw new Error('Database still initializing'); },
+      remove: async () => { throw new Error('Database still initializing'); },
+      isLoading: false,
+      error: new Error('Database still initializing'),
+    };
+  }
+
   const { db, store } = context;
   
   const [isLoading, setIsLoading] = useState(false);

@@ -8,6 +8,7 @@ export { useSQL } from './hooks/useSQL';
 export { useMutation } from './hooks/useMutation';
 export { useSyncStatus } from './hooks/useSyncStatus';
 export { usePeers } from './hooks/usePeers';
+export { useIsDatabaseReady } from './hooks/useIsDatabaseReady';
 
 // Types
 export type {

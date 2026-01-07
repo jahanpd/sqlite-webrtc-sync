@@ -19,5 +19,5 @@ import type { SyncableDatabase } from '../../index';
  * }
  * ```
  */
-export declare function useDatabase(dbName: string): SyncableDatabase;
+export declare function useDatabase(dbName: string): SyncableDatabase | null;
 //# sourceMappingURL=useDatabase.d.ts.map

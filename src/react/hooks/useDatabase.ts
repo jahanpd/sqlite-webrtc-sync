@@ -21,7 +21,7 @@ import type { SyncableDatabase } from '../../index';
  * }
  * ```
  */
-export function useDatabase(dbName: string): SyncableDatabase {
+export function useDatabase(dbName: string): SyncableDatabase | null {
   const context = useDatabaseContext(dbName);
-  return context.db;
+  return context?.db ?? null;
 }

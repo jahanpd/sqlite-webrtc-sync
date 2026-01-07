@@ -28,7 +28,8 @@
       useQuery, 
       useMutation, 
       useSyncStatus,
-      useDatabase 
+      useDatabase,
+      useIsDatabaseReady
     } from './react.js';
 
     const { useState, useEffect } = React;
@@ -69,7 +70,14 @@
 
     // Test Component 1: Basic query and mutation
     function TodoApp({ onTestComplete }) {
+      console.log('Child mounted');  // Log mount for test verification
+
+      const isReady = useIsDatabaseReady('test-db');
+      console.log('isReady: ' + isReady);
+
       const { data, isLoading, error, refetch } = useQuery('test-db', 'todos').exec();
+      console.log('useQuery loading: ' + isLoading + ', data length: ' + (data ? data.length : 'undefined'));
+
       const { insert, update, remove, isLoading: mutating } = useMutation('test-db', 'todos');
       const db = useDatabase('test-db');
       const [testPhase, setTestPhase] = useState(0);

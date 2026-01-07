@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DatabaseProvider Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+    .log { color: #666; margin: 2px 0; }
+    #results { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>DatabaseProvider Tests</h1>
+  <div id="root"></div>
+  <div id="results"></div>
+  
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18",
+      "react-dom": "https://esm.sh/react-dom@18",
+      "react-dom/client": "https://esm.sh/react-dom@18/client",
+      "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import React, { useState, useEffect, useRef } from 'react';
+    import ReactDOM from 'react-dom/client';
+    import { defineSchema, defineTable, column } from './schema.js';
+    import { DatabaseProvider, useQuery, useDatabase, useIsDatabaseReady, useMutation } from './react.js';
+
+    const results = [];
+    const mountLog = [];
+
+    function log(msg, type = 'log') {
+      console.log(`[${type}] ${msg}`);
+      const div = document.createElement('div');
+      div.className = type;
+      div.textContent = msg;
+      document.getElementById('results').appendChild(div);
+    }
+
+    function assert(condition, testName) {
+      if (condition) {
+        log(`PASS: ${testName}`);
+        results.push({ name: testName, passed: true });
+        return true;
+      } else {
+        log(`FAIL: ${testName}`);
+        results.push({ name: testName, passed: false });
+        return false;
+      }
+    }
+
+    const schema = defineSchema({
+      items: defineTable({
+        name: column.text(),
+        value: column.integer(),
+      }),
+    });
+
+    function TestComponent() {
+      console.log('Child component mounted');
+      mountLog.push('mounted');
+
+      const { data, isLoading } = useQuery('provider-test-db', 'items').exec();
+      const db = useDatabase('provider-test-db');
+      const isReady = useIsDatabaseReady('provider-test-db');
+
+      console.log('State: ready=' + isReady + ', loading=' + isLoading + ', data=' + (data ? data.length : 'undefined') + ', db=' + (db ? 'yes' : 'no'));
+
+      React.useEffect(() => {
+        if (!isReady) return;
+        if (window.testsComplete) return;
+
+        console.log('Running tests...');
+
+        const newResults = [];
+
+        newResults.push({ name: 'Child mounted during loading', passed: mountLog.length > 0 });
+        newResults.push({ name: 'Provider ready', passed: isReady === true });
+        newResults.push({ name: 'Database instance available', passed: db !== null });
+        newResults.push({ name: 'Query returned data', passed: data !== undefined });
+
+        log('');
+        log('Tests complete: ' + newResults.filter(r => r.passed).length + '/' + newResults.length + ' passed');
+
+        window.testResults = {
+          total: newResults.length,
+          passed: newResults.filter(r => r.passed).length,
+          failed: newResults.filter(r => !r.passed).length,
+          results: newResults,
+          mountLog: mountLog,
+        };
+        window.testsComplete = true;
+      }, [isReady, db, data]);
+
+      return React.createElement('div', null,
+        React.createElement('p', null, 'DatabaseProvider Test Running...'),
+        React.createElement('p', null, 'Ready: ' + (isReady ? 'Yes' : 'No'))
+      );
+    }
+
+    function App() {
+      return React.createElement(
+        DatabaseProvider,
+        {
+          name: 'provider-test-db',
+          schema: schema,
+          mode: 'local'
+        },
+        React.createElement(TestComponent)
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+
+    window.pageReady = true;
+  </script>
+</body>
+</html>

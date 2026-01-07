@@ -1,1 +1,1 @@
-{"version":3,"file":"useDatabase.d.ts","sourceRoot":"","sources":["../../../src/react/hooks/useDatabase.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,aAAa,CAAC;AAEpD;;;;;;;;;;;;;;;;;;;GAmBG;AACH,wBAAgB,WAAW,CAAC,MAAM,EAAE,MAAM,GAAG,gBAAgB,CAG5D"}
+{"version":3,"file":"useDatabase.d.ts","sourceRoot":"","sources":["../../../src/react/hooks/useDatabase.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,aAAa,CAAC;AAEpD;;;;;;;;;;;;;;;;;;;GAmBG;AACH,wBAAgB,WAAW,CAAC,MAAM,EAAE,MAAM,GAAG,gBAAgB,GAAG,IAAI,CAGnE"}

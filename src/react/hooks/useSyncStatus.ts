@@ -23,6 +23,17 @@ import type { SyncStatus } from '../types';
  */
 export function useSyncStatus(dbName: string): SyncStatus {
   const context = useDatabaseContext(dbName);
+
+  if (!context) {
+    return {
+      isConnected: false,
+      peerCount: 0,
+      pendingOperations: 0,
+      peerId: null,
+      mode: 'local',
+    };
+  }
+
   const { db } = context;
   
   // Determine mode from whether isConnected method exists on db

@@ -46,6 +46,16 @@ export function useSQL<T = Record<string, unknown>>(
   options?: SQLQueryOptions
 ): QueryResult<T> {
   const context = useDatabaseContext(dbName);
+
+  if (!context) {
+    return {
+      data: undefined,
+      isLoading: true,
+      error: null,
+      refetch: async () => {},
+    };
+  }
+
   const { db, store } = context;
   
   const [data, setData] = useState<T[] | undefined>(undefined);

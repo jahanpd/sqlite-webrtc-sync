@@ -18,7 +18,7 @@ export declare function DatabaseProvider<S extends SchemaDef>({ name, schema, mo
  * Get the database context for a specific database name.
  * Used internally by hooks.
  */
-export declare function useDatabaseContext<S extends SchemaDef = SchemaDef>(dbName?: string): DatabaseContextValue<S>;
+export declare function useDatabaseContext<S extends SchemaDef = SchemaDef>(dbName?: string): DatabaseContextValue<S> | null;
 /**
  * Hook to get a database context object with scoped hooks.
  *
@@ -31,13 +31,14 @@ export declare function useDatabaseContext<S extends SchemaDef = SchemaDef>(dbNa
  * ```
  */
 export declare function useDB<S extends SchemaDef>(dbName: string): {
-    /** Raw database instance */
-    instance: SyncableDatabase;
-    /** Database name */
+    instance: null;
     name: string;
-    /** Schema */
+    schema: null;
+    _store: null;
+} | {
+    instance: SyncableDatabase;
+    name: string;
     schema: import(".").Schema<S>;
-    /** Query store (internal) */
     _store: QueryStore;
 };
 //# sourceMappingURL=context.d.ts.map

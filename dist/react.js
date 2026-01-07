@@ -19298,9 +19298,6 @@ function DatabaseProvider({
   if (error) {
     throw error;
   }
-  if (!contextValue) {
-    return null;
-  }
   return /* @__PURE__ */ jsx(Context.Provider, { value: contextValue, children });
 }
 function useDatabaseContext(dbName) {
@@ -19317,22 +19314,24 @@ function useDatabaseContext(dbName) {
   }
   const context = useContext(Context);
   if (!context) {
-    throw new Error(
-      `No DatabaseProvider found for "${dbName}". Make sure to wrap your component tree with <DatabaseProvider name="\${dbName}" ...>`
-    );
+    return null;
   }
   return context;
 }
 function useDB(dbName) {
   const context = useDatabaseContext(dbName);
+  if (!context) {
+    return {
+      instance: null,
+      name: dbName,
+      schema: null,
+      _store: null
+    };
+  }
   return {
-    /** Raw database instance */
     instance: context.db,
-    /** Database name */
     name: context.name,
-    /** Schema */
     schema: context.schema,
-    /** Query store (internal) */
     _store: context.store
   };
 }
@@ -19340,7 +19339,7 @@ function useDB(dbName) {
 // src/react/hooks/useDatabase.ts
 function useDatabase(dbName) {
   const context = useDatabaseContext(dbName);
-  return context.db;
+  return context?.db ?? null;
 }
 
 // src/react/hooks/useQuery.ts
@@ -19372,6 +19371,15 @@ function createQueryBuilder(dbName, tableName, options = { where: [] }) {
 }
 function useQueryExec(dbName, tableName, options) {
   const context = useDatabaseContext(dbName);
+  if (!context) {
+    return {
+      data: void 0,
+      isLoading: true,
+      error: null,
+      refetch: async () => {
+      }
+    };
+  }
   const { db, store } = context;
   const [data, setData] = useState2(void 0);
   const [isLoading, setIsLoading] = useState2(true);
@@ -19438,6 +19446,15 @@ function useQuery(dbName, tableName) {
 import { useState as useState3, useEffect as useEffect3, useCallback as useCallback2, useMemo } from "react";
 function useSQL(dbName, sql, options) {
   const context = useDatabaseContext(dbName);
+  if (!context) {
+    return {
+      data: void 0,
+      isLoading: true,
+      error: null,
+      refetch: async () => {
+      }
+    };
+  }
   const { db, store } = context;
   const [data, setData] = useState3(void 0);
   const [isLoading, setIsLoading] = useState3(true);
@@ -19484,6 +19501,21 @@ function useSQL(dbName, sql, options) {
 import { useState as useState4, useCallback as useCallback3 } from "react";
 function useMutation(dbName, tableName) {
   const context = useDatabaseContext(dbName);
+  if (!context) {
+    return {
+      insert: async () => {
+        throw new Error("Database still initializing");
+      },
+      update: async () => {
+        throw new Error("Database still initializing");
+      },
+      remove: async () => {
+        throw new Error("Database still initializing");
+      },
+      isLoading: false,
+      error: new Error("Database still initializing")
+    };
+  }
   const { db, store } = context;
   const [isLoading, setIsLoading] = useState4(false);
   const [error, setError] = useState4(null);
@@ -19572,6 +19604,15 @@ function useMutation(dbName, tableName) {
 import { useState as useState5, useEffect as useEffect4 } from "react";
 function useSyncStatus(dbName) {
   const context = useDatabaseContext(dbName);
+  if (!context) {
+    return {
+      isConnected: false,
+      peerCount: 0,
+      pendingOperations: 0,
+      peerId: null,
+      mode: "local"
+    };
+  }
   const { db } = context;
   const isSyncingMode = typeof db.isConnected === "function";
   const [status, setStatus] = useState5(() => ({
@@ -19609,6 +19650,22 @@ function useSyncStatus(dbName) {
 import { useState as useState6, useEffect as useEffect5, useCallback as useCallback4 } from "react";
 function usePeers(dbName) {
   const context = useDatabaseContext(dbName);
+  if (!context) {
+    return {
+      peers: [],
+      connectToPeer: async () => {
+        throw new Error("Database still initializing");
+      },
+      disconnectFromPeer: async () => {
+        throw new Error("Database still initializing");
+      },
+      pushQueue: async () => {
+        throw new Error("Database still initializing");
+      },
+      clearQueue: () => {
+      }
+    };
+  }
   const { db } = context;
   const [peers, setPeers] = useState6(
     () => db.getConnectedPeers?.() ?? []
@@ -19643,11 +19700,18 @@ function usePeers(dbName) {
   }, [db]);
   return { peers, connectToPeer, disconnectFromPeer, pushQueue, clearQueue };
 }
+
+// src/react/hooks/useIsDatabaseReady.ts
+function useIsDatabaseReady(dbName) {
+  const context = useDatabaseContext(dbName);
+  return context !== null;
+}
 export {
   DatabaseProvider,
   useDB,
   useDatabase,
   useDatabaseContext,
+  useIsDatabaseReady,
   useMutation,
   usePeers,
   useQuery,
