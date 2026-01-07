@@ -23,8 +23,10 @@
     "build": "node build.js",
     "build:worker": "node build-worker.js",
     "serve": "bun server.mjs",
-    "test": "bun run serve & sleep 2 && bun run serve & PID=$! && bunx playwright test && kill $PID",
-    "test:ui": "bunx playwright test --ui"
+    "test": "npx playwright test",
+    "test:ui": "npx playwright test --ui",
+    "test:vite": "npx playwright test --project=vite-dev --project=vite-preview",
+    "test:basic": "npx playwright test --project=chromium"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.51.1-build1",

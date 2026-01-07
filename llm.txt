@@ -373,6 +373,118 @@ await dbB.close();
 - Real-time sync: Mutations broadcast to all connected peers immediately
 - Offline queue: Operations queued in-memory when no peers connected
 
+---
+
+## Vite Integration
+
+The package works with Vite but requires specific configuration for WASM loading and OPFS support.
+
+### Vite Dev Server Configuration
+
+```javascript
+import { defineConfig } from 'vite';
+import { syncableSqliteVitePlugin } from 'syncable-sqlite';
+
+export default defineConfig({
+  plugins: [syncableSqliteVitePlugin()],
+  server: {
+    headers: {
+      // Required for SharedArrayBuffer (used by SQLite WASM)
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  optimizeDeps: {
+    exclude: ['syncable-sqlite'],
+  },
+});
+```
+
+### Vite Production Build Configuration
+
+Production builds require copying SQLite WASM assets to the output directory:
+
+```javascript
+import { defineConfig } from 'vite';
+import { syncableSqliteVitePlugin } from 'syncable-sqlite';
+import { copyFileSync, mkdirSync, existsSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function copySqliteAssetsPlugin() {
+  return {
+    name: 'copy-sqlite-assets',
+    writeBundle() {
+      const srcDir = resolve(__dirname, 'node_modules/syncable-sqlite/dist');
+      const destDir = resolve(__dirname, 'dist/assets');
+      
+      mkdirSync(destDir, { recursive: true });
+      
+      const filesToCopy = [
+        'sqlite3.wasm',                    // Main WASM binary
+        'sqlite3-opfs-async-proxy.js',     // OPFS async worker (required for persistence)
+      ];
+      
+      for (const file of filesToCopy) {
+        const src = resolve(srcDir, file);
+        const dest = resolve(destDir, file);
+        if (existsSync(src)) copyFileSync(src, dest);
+      }
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.endsWith('.wasm')) {
+          res.setHeader('Content-Type', 'application/wasm');
+        }
+        next();
+      });
+    },
+  };
+}
+
+export default defineConfig({
+  plugins: [syncableSqliteVitePlugin(), copySqliteAssetsPlugin()],
+  server: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  preview: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  optimizeDeps: {
+    exclude: ['syncable-sqlite'],
+  },
+});
+```
+
+### Why Vite Requires Special Configuration
+
+1. **WASM URL Resolution**: SQLite WASM uses `import.meta.url` to locate `.wasm` files. The package loads the worker from a Blob URL, which breaks this resolution. The package handles this by replacing `import.meta.url` references with the actual asset URLs at runtime.
+
+2. **OPFS Async Proxy**: SQLite's OPFS VFS spawns a separate worker (`sqlite3-opfs-async-proxy.js`) for async file operations. This file must be copied to the build output.
+
+3. **SharedArrayBuffer**: SQLite WASM requires `SharedArrayBuffer`, which needs CORS headers:
+   - `Cross-Origin-Opener-Policy: same-origin`
+   - `Cross-Origin-Embedder-Policy: require-corp`
+
+4. **MIME Types**: WASM files must be served with `application/wasm` content type.
+
+### Files Required for Production
+
+| File | Purpose |
+|------|---------|
+| `sqlite3.wasm` | Main SQLite WebAssembly binary |
+| `sqlite3-opfs-async-proxy.js` | OPFS async operations worker |
+
+Both files are in `node_modules/syncable-sqlite/dist/` and should be copied to your build output's assets directory.
+
 ## Common Patterns
 
 ### Initialize with error handling

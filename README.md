@@ -32,6 +32,113 @@ npm install github:your-username/syncable-sqlite
 npm install github:your-username/syncable-sqlite#main
 ```
 
+## Vite Integration
+
+When using this package with Vite, you need some additional configuration to ensure the SQLite WASM files are handled correctly.
+
+### Vite Dev Server
+
+Add the plugin and configure the server in your `vite.config.js`:
+
+```javascript
+import { defineConfig } from 'vite';
+import { syncableSqliteVitePlugin } from 'syncable-sqlite';
+
+export default defineConfig({
+  plugins: [syncableSqliteVitePlugin()],
+  server: {
+    headers: {
+      // Required for SharedArrayBuffer (used by SQLite WASM)
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  optimizeDeps: {
+    exclude: ['syncable-sqlite'],
+  },
+});
+```
+
+### Vite Production Build
+
+For production builds, SQLite WASM requires additional files to be copied to your output directory. Add this plugin to your `vite.config.js`:
+
+```javascript
+import { defineConfig } from 'vite';
+import { syncableSqliteVitePlugin } from 'syncable-sqlite';
+import { copyFileSync, mkdirSync, existsSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Plugin to copy SQLite WASM assets to dist during build
+function copySqliteAssetsPlugin() {
+  return {
+    name: 'copy-sqlite-assets',
+    writeBundle() {
+      const srcDir = resolve(__dirname, 'node_modules/syncable-sqlite/dist');
+      const destDir = resolve(__dirname, 'dist/assets');
+      
+      mkdirSync(destDir, { recursive: true });
+      
+      // Files required for SQLite WASM with OPFS support
+      const filesToCopy = [
+        'sqlite3.wasm',                    // Main WASM binary
+        'sqlite3-opfs-async-proxy.js',     // OPFS async worker
+      ];
+      
+      for (const file of filesToCopy) {
+        const src = resolve(srcDir, file);
+        const dest = resolve(destDir, file);
+        if (existsSync(src)) {
+          copyFileSync(src, dest);
+          console.log(`Copied ${file} to dist/assets/`);
+        }
+      }
+    },
+    configurePreviewServer(server) {
+      // Set correct MIME types for SQLite assets
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.endsWith('.wasm')) {
+          res.setHeader('Content-Type', 'application/wasm');
+        }
+        next();
+      });
+    },
+  };
+}
+
+export default defineConfig({
+  plugins: [syncableSqliteVitePlugin(), copySqliteAssetsPlugin()],
+  server: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  preview: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  optimizeDeps: {
+    exclude: ['syncable-sqlite'],
+  },
+});
+```
+
+### Why is this needed?
+
+1. **WASM Loading**: SQLite WASM uses `import.meta.url` to locate the `.wasm` file. The package handles this automatically by injecting the correct URL at runtime.
+
+2. **OPFS Worker**: SQLite's OPFS (Origin Private File System) persistence requires a separate worker file (`sqlite3-opfs-async-proxy.js`). This file must be available in production.
+
+3. **CORS Headers**: SQLite WASM uses `SharedArrayBuffer`, which requires specific CORS headers (`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`).
+
+4. **MIME Types**: The `.wasm` file must be served with `application/wasm` content type.
+
 ## Quick Start
 
 ### Create a Local Database

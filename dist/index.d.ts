@@ -86,5 +86,10 @@ export declare class SyncableDatabase {
     close(): Promise<void>;
 }
 export declare function createDatabase(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase>;
+export declare function syncableSqliteVitePlugin(): {
+    name: string;
+    configureServer(server: any): void;
+    configurePreviewServer(server: any): void;
+};
 export {};
 //# sourceMappingURL=index.d.ts.map

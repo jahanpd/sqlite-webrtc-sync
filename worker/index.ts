@@ -1,3 +1,7 @@
+// NOTE: globalThis.sqlite3InitModuleState is set up by the main thread BEFORE this code runs
+// This is injected at the start of the worker blob to configure WASM file location
+// because sqlite3.mjs reads it at module evaluation time
+
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 
 const OPFS_VFS = 'opfs';
@@ -293,12 +297,31 @@ function rewriteDelete(sql: string, tableName: string): { sql: string; params: u
 }
 
 function rewriteQuery(sql: string): string {
-  return sql.replace(/DELETE\s+FROM\s+["`]?(\w+)["`]?/gi, (_match, _tableName) => {
-    return `SELECT * FROM ${_tableName} WHERE deleted = 0`;
-  }).replace(/FROM\s+["`]?(\w+)["`]?/gi, (match, tblName) => {
-    if (match.toLowerCase().includes('delete')) return match;
-    return `FROM ${tblName} WHERE deleted = 0`;
-  });
+  // Don't rewrite DELETE statements here - they're handled by rewriteDelete
+  if (sql.trim().toUpperCase().startsWith('DELETE')) {
+    return sql;
+  }
+  
+  // Only rewrite queries that have a FROM clause (i.e., querying a table)
+  // This excludes queries like "SELECT 1 as num" or "SELECT datetime('now')"
+  if (!/\bFROM\b/i.test(sql)) {
+    return sql;
+  }
+  
+  // Check if the query already has a WHERE clause
+  const hasWhere = /\bWHERE\b/i.test(sql);
+  
+  if (hasWhere) {
+    // Add "deleted = 0 AND" after the existing WHERE
+    return sql.replace(/\bWHERE\b/i, 'WHERE deleted = 0 AND');
+  } else {
+    // Add WHERE deleted = 0 before ORDER BY, GROUP BY, LIMIT, or at the end
+    const insertPoint = sql.search(/\b(ORDER\s+BY|GROUP\s+BY|LIMIT|HAVING|$)/i);
+    if (insertPoint > 0) {
+      return sql.slice(0, insertPoint) + ' WHERE deleted = 0 ' + sql.slice(insertPoint);
+    }
+    return sql + ' WHERE deleted = 0';
+  }
 }
 
 interface ProcessedSql {
@@ -616,13 +639,6 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
 
 self.onmessage = async (event: MessageEvent<SQLiteRequest>) => {
   const request = event.data;
-  
-  if (request.type === 'init') {
-    const response = await handleRequest(request);
-    self.postMessage(response);
-    return;
-  }
-  
   const response = await handleRequest(request);
   self.postMessage(response);
 };

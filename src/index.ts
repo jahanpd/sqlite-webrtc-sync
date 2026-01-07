@@ -91,10 +91,28 @@ export class SyncableDatabase {
       throw new Error('SyncableDatabase requires a browser environment');
     }
 
-    const workerUrl = new URL('./worker.js', import.meta.url);
+    // Compute base URL for assets - the wasm file should be served alongside index.js
+    // We use import.meta.url from the main bundle to get the correct base path
+    const baseUrl = new URL('./', import.meta.url).href;
+
+    // Use Blob URL to load worker, bypassing Vite's file system restrictions
+    // worker-string.ts is generated at build time from worker/index.ts
+    const { workerCode } = await import('./worker-string');
+    
+    // The sqlite3 WASM library uses import.meta.url to resolve the WASM file location.
+    // When loaded from a Blob URL, import.meta.url returns "blob:..." which can't be
+    // used as a base for URL construction. We need to replace import.meta.url references
+    // with the actual base URL where the assets are served.
+    const modifiedWorkerCode = workerCode.replace(
+      /import\.meta\.url/g,
+      JSON.stringify(baseUrl + 'worker.js')
+    );
+    
+    const workerBlob = new Blob([modifiedWorkerCode], { type: 'application/javascript' });
+    const workerUrl = URL.createObjectURL(workerBlob);
     this.worker = new Worker(workerUrl, { type: 'module' });
 
-    this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+    this.worker!.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const { id, success, result, error } = event.data;
       const pending = this.pendingRequests.get(id);
       if (pending) {
@@ -107,7 +125,7 @@ export class SyncableDatabase {
       }
     };
 
-    this.worker.onerror = (error: Event) => {
+    this.worker!.onerror = (error: Event) => {
       console.error('Worker error:', error);
     };
 
@@ -247,11 +265,11 @@ export class SyncableDatabase {
     });
   }
 
-  private sendRequest(type: string, dbName: string, args: unknown[]): Promise<unknown> {
+  private sendRequest(type: string, dbName: string, args: unknown[], extra?: Record<string, unknown>): Promise<unknown> {
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject });
-      this.worker?.postMessage({ id, type, dbName, args });
+      this.worker?.postMessage({ id, type, dbName, args, ...extra });
     });
   }
 
@@ -605,4 +623,38 @@ class PeerConnection {
 
 export async function createDatabase(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase> {
   return SyncableDatabase.create(dbName, config);
+}
+
+export function syncableSqliteVitePlugin() {
+  return {
+    name: 'syncable-sqlite-wasm-fix',
+    configureServer(server: any) {
+      server.middlewares.use((req: any, res: any, next: any) => {
+        const url = req.url || '';
+        
+        if (url.includes('/worker.js') || url.endsWith('.js')) {
+          const headers = res.getHeaders?.() || {};
+          if (!headers['content-type']) {
+            res.setHeader('Content-Type', 'application/javascript');
+          }
+        }
+        
+        next();
+      });
+    },
+    configurePreviewServer(server: any) {
+      server.middlewares.use((req: any, res: any, next: any) => {
+        const url = req.url || '';
+        
+        if (url.includes('/worker.js') || url.endsWith('.js')) {
+          const headers = res.getHeaders?.() || {};
+          if (!headers['content-type']) {
+            res.setHeader('Content-Type', 'application/javascript');
+          }
+        }
+        
+        next();
+      });
+    }
+  };
 }
