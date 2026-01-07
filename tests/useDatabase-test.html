@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>useDatabase Hook Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+    .log { color: #666; margin: 2px 0; }
+    #results { white-space: pre-wrap; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18",
+      "react-dom": "https://esm.sh/react-dom@18",
+      "react-dom/client": "https://esm.sh/react-dom@18/client",
+      "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime"
+    }
+  }
+  </script>
+</head>
+<body>
+  <h1>useDatabase Hook Test</h1>
+  <div id="root"></div>
+  <div id="results"></div>
+
+  <script type="module">
+    import React, { useState, useEffect, useRef } from 'react';
+    import ReactDOM from 'react-dom/client';
+    import { defineSchema, defineTable, column } from './schema.js';
+    import { DatabaseProvider, useDatabase, useIsDatabaseReady } from './react.js';
+
+    function log(msg) {
+      console.log(msg);
+      const div = document.createElement('div');
+      div.className = 'log';
+      div.textContent = msg;
+      document.getElementById('results').appendChild(div);
+    }
+
+    const schema = defineSchema({
+      users: defineTable({
+        name: column.text(),
+        email: column.text(),
+      }),
+    });
+
+    function TestComponent({ onTestComplete }) {
+      const db = useDatabase('useDatabase-test-db');
+      const testedRef = useRef(false);
+
+      useEffect(() => {
+        if (!db || testedRef.current) return;
+        testedRef.current = true;
+
+        async function runTests() {
+          try {
+            log('Running tests...');
+            log(`db is non-null: ${db !== null}`);
+            log(`db has exec method: ${typeof db.exec === 'function'}`);
+
+            await db.exec("INSERT INTO users (name, email) VALUES ('Test', 'test@test.com')");
+            const result = await db.exec('SELECT COUNT(*) as count FROM users');
+            log(`User count: ${result.rows[0].count}`);
+
+            onTestComplete({
+              dbWasNotNull: db !== null,
+              dbHasExec: typeof db.exec === 'function',
+              userCount: result.rows[0].count,
+            });
+          } catch (err) {
+            log('Test error: ' + err.message);
+            console.error(err);
+            onTestComplete({
+              error: err.message,
+            });
+          }
+        }
+
+        runTests();
+      }, [db, onTestComplete]);
+
+      return React.createElement('div', null,
+        React.createElement('p', null, `db is null: ${db === null ? 'true' : 'false'}`)
+      );
+    }
+
+    function TestRunner() {
+      const [complete, setComplete] = useState(false);
+
+      const handleTestComplete = (testData) => {
+        setComplete(true);
+        window.testData = testData;
+        window.testComplete = true;
+        log('');
+        log('Test complete!');
+        log(`dbWasNull: ${testData.dbWasNull}`);
+        log(`dbWasNotNull: ${testData.dbWasNotNull}`);
+        log(`db has exec: ${testData.dbHasMethods?.exec}`);
+        log(`db has query: ${testData.dbHasMethods?.query}`);
+        log(`db has insert: ${testData.dbHasMethods?.insert}`);
+        log(`db has update: ${testData.dbHasMethods?.update}`);
+        log(`db has remove: ${testData.dbHasMethods?.remove}`);
+        log(`user count: ${testData.userCount}`);
+        if (testData.error) {
+          log(`Error: ${testData.error}`);
+        }
+      };
+
+      if (complete) {
+        return React.createElement('div', null,
+          React.createElement('h2', null, 'Tests Complete')
+        );
+      }
+
+      return React.createElement(
+        DatabaseProvider,
+        { name: 'useDatabase-test-db', schema: schema, mode: 'local' },
+        React.createElement(TestComponent, { onTestComplete: handleTestComplete })
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(TestRunner, null));
+    window.pageReady = true;
+  </script>
+</body>
+</html>

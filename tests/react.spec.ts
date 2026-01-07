@@ -109,4 +109,46 @@ test.describe('React Integration', () => {
     expect(result.hasTodos).toBe(true);
     expect(result.hasUsers).toBe(true);
   });
+
+  test('useDatabase returns non-null database when inside DatabaseProvider', async ({ page }) => {
+    const consoleErrors: string[] = [];
+
+    page.on('console', (msg) => {
+      const text = msg.text();
+      console.log(`[${msg.type()}] ${text}`);
+      if (msg.type() === 'error') {
+        consoleErrors.push(text);
+      }
+    });
+
+    page.on('pageerror', (error) => {
+      console.log('[pageerror]', error.message);
+      consoleErrors.push(error.message);
+    });
+
+    await page.goto('/useDatabase-test.html');
+
+    const result = await Promise.race([
+      page.waitForFunction(() => (window as any).testComplete === true, { timeout: 30000 })
+        .then(() => 'done'),
+      new Promise<string>(resolve => setTimeout(() => resolve('timeout'), 35000))
+    ]);
+
+    expect(result).toBe('done');
+
+    const testData = await page.evaluate(() => (window as any).testData);
+    console.log('Test data:', JSON.stringify(testData, null, 2));
+
+    expect(testData).toBeDefined();
+    expect(testData.error).toBeUndefined();
+    expect(testData.dbWasNotNull).toBe(true);
+    expect(testData.dbHasExec).toBe(true);
+    expect(testData.userCount).toBe(1);
+
+    const realErrors = consoleErrors.filter(e =>
+      !e.includes('Failed to load resource') &&
+      !e.includes('404')
+    );
+    expect(realErrors).toHaveLength(0);
+  });
 });
