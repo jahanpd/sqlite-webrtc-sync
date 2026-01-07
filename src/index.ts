@@ -87,6 +87,8 @@ export class SyncableDatabase {
   }
 
   private async init(): Promise<void> {
+    console.log(`[SyncableDatabase] Starting initialization for database: ${this.dbName}`);
+    
     if (typeof window === 'undefined' && typeof Worker === 'undefined') {
       throw new Error('SyncableDatabase requires a browser environment');
     }
@@ -94,6 +96,7 @@ export class SyncableDatabase {
     // Compute base URL for assets - the wasm file should be served alongside index.js
     // We use import.meta.url from the main bundle to get the correct base path
     const baseUrl = new URL('./', import.meta.url).href;
+    console.log(`[SyncableDatabase] Base URL for assets: ${baseUrl}`);
 
     // Use Blob URL to load worker, bypassing Vite's file system restrictions
     // worker-string.ts is generated at build time from worker/index.ts
@@ -110,6 +113,7 @@ export class SyncableDatabase {
     
     const workerBlob = new Blob([modifiedWorkerCode], { type: 'application/javascript' });
     const workerUrl = URL.createObjectURL(workerBlob);
+    console.log(`[SyncableDatabase] Worker blob URL created`);
     this.worker = new Worker(workerUrl, { type: 'module' });
 
     this.worker!.onmessage = (event: MessageEvent<WorkerMessage>) => {
@@ -129,13 +133,19 @@ export class SyncableDatabase {
       console.error('Worker error:', error);
     };
 
+    console.log(`[SyncableDatabase] Sending init request to worker...`);
     await this.sendRequest('init', this.dbName, []);
+    console.log(`[SyncableDatabase] SQLite WASM initialized successfully`);
     
+    console.log(`[SyncableDatabase] Creating database: ${this.dbName}`);
     await this.sendRequest('createDb', this.dbName, []);
+    console.log(`[SyncableDatabase] Database created successfully`);
     
     this.isInitialized = true;
+    console.log(`[SyncableDatabase] Initialization complete for database: ${this.dbName}`);
 
     if (this.mode === 'syncing') {
+      console.log(`[SyncableDatabase] Initializing peer connection...`);
       await this.initPeer();
       this.startDiscovery();
     }

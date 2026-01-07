@@ -29,14 +29,19 @@ type SQLiteResponse = {
 };
 
 async function initSqlite(): Promise<void> {
+  console.log('[Worker] Initializing SQLite WASM module...');
   const module = await sqlite3InitModule({
     print: console.log,
     printErr: console.error,
   });
   sqlite3 = module;
+  console.log('[Worker] SQLite WASM module initialized successfully');
+  console.log('[Worker] OPFS directory:', sqlite3?.capi.sqlite3_wasmfs_opfs_dir?.() || 'opfs');
 }
 
 function createDb(dbName: string): any {
+  console.log(`[Worker] Creating database: ${dbName}`);
+  
   if (!sqlite3) {
     throw new Error('SQLite not initialized');
   }
@@ -50,6 +55,7 @@ function createDb(dbName: string): any {
   
   initializeSchema(db);
   
+  console.log(`[Worker] Database ${dbName} created successfully`);
   return db;
 }
 
