@@ -62,5 +62,11 @@ export interface QueryBuilderOptions {
     orderBy?: OrderByClause;
     limit?: number;
 }
+export interface SQLQueryOptions {
+    /** SQL parameters for prepared statements */
+    params?: unknown[];
+    /** Tables this query depends on (for reactivity) */
+    tables?: string[];
+}
 export type { SyncableDatabase, PeerServerConfig, PeerInfo, SyncOperation };
 //# sourceMappingURL=types.d.ts.map

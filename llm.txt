@@ -25,7 +25,8 @@ import { defineSchema, defineTable, column } from 'syncable-sqlite/schema';
 // React hooks
 import { 
   DatabaseProvider, 
-  useQuery, 
+  useQuery,
+  useSQL,
   useMutation, 
   useSyncStatus, 
   usePeers, 
@@ -632,7 +633,7 @@ On mount, DatabaseProvider:
 
 ### useQuery(dbName, tableName)
 
-Reactive query hook with builder pattern. Returns typed results.
+Reactive query hook with builder pattern for simple table queries. Returns typed results.
 
 ```tsx
 const { data, isLoading, error, refetch } = useQuery('my-app', 'todos')
@@ -654,6 +655,70 @@ const { data, isLoading, error, refetch } = useQuery('my-app', 'todos')
 - Local mutations affect the table
 - Remote sync operations affect the table
 - `refetch()` is called
+
+### useSQL<T>(dbName, sql, options?)
+
+Raw SQL query hook for complex queries with JOINs, subqueries, GROUP BY, HAVING, etc.
+
+```tsx
+interface ContentWithNotes {
+  id: string;
+  title: string;
+  note_count: number;
+}
+
+const { data, isLoading, error, refetch } = useSQL<ContentWithNotes>(
+  'my-app',
+  `SELECT 
+    content.id,
+    content.title,
+    (SELECT COUNT(*) FROM notes WHERE notes.content_id = content.id) as note_count
+  FROM content
+  WHERE content.deleted = 0
+  GROUP BY content.id
+  HAVING note_count > 0`,
+  {
+    params: [],                          // Optional SQL parameters
+    tables: ['content', 'notes'],        // Tables for reactivity (optional)
+  }
+);
+
+// data: ContentWithNotes[] | undefined
+```
+
+**Options:**
+- `params?: unknown[]` - SQL parameters for prepared statements. Query re-runs when params change.
+- `tables?: string[]` - Tables this query depends on. If provided, query auto-refreshes when these tables change.
+
+**Examples:**
+
+```tsx
+// Simple query without reactivity
+const { data } = useSQL<{ count: number }>('db', 'SELECT COUNT(*) as count FROM users');
+
+// Parameterized query (re-runs when userId changes)
+const { data } = useSQL<User>('db', 'SELECT * FROM users WHERE id = ?', {
+  params: [userId],
+  tables: ['users'],
+});
+
+// GROUP BY with aggregates
+const { data } = useSQL<CategoryStats>('db', `
+  SELECT category, COUNT(*) as count, SUM(price) as total
+  FROM products
+  GROUP BY category
+  ORDER BY total DESC
+`, { tables: ['products'] });
+
+// Subqueries in SELECT
+const { data } = useSQL<PostWithComments>('db', `
+  SELECT 
+    posts.id,
+    posts.title,
+    (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id) as comment_count
+  FROM posts
+`, { tables: ['posts', 'comments'] });
+```
 
 ### useMutation(dbName, tableName)
 
@@ -802,6 +867,11 @@ interface QueryResult<T> {
   isLoading: boolean;
   error: Error | null;
   refetch: () => Promise<void>;
+}
+
+interface SQLQueryOptions {
+  params?: unknown[];    // SQL parameters for prepared statements
+  tables?: string[];     // Tables for reactivity
 }
 
 interface MutationResult<Row> {

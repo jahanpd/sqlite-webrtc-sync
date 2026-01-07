@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>useSQL Hook Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+    .log { color: #666; margin: 2px 0; }
+    #results { white-space: pre-wrap; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18",
+      "react-dom": "https://esm.sh/react-dom@18",
+      "react-dom/client": "https://esm.sh/react-dom@18/client",
+      "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime"
+    }
+  }
+  </script>
+</head>
+<body>
+  <h1>useSQL Hook Tests</h1>
+  <div id="root"></div>
+  <div id="results"></div>
+  
+  <script type="module">
+    import React, { useState, useEffect, useRef } from 'react';
+    import ReactDOM from 'react-dom/client';
+    import { defineSchema, defineTable, column } from './schema.js';
+    import { DatabaseProvider, useSQL, useDatabase } from './react.js';
+    
+    const results = [];
+
+    function log(msg) {
+      console.log(msg);
+      const div = document.createElement('div');
+      div.className = 'log';
+      div.textContent = msg;
+      document.getElementById('results').appendChild(div);
+    }
+
+    function assert(condition, testName) {
+      if (condition) {
+        log(`PASS: ${testName}`);
+        results.push({ name: testName, passed: true });
+        return true;
+      } else {
+        log(`FAIL: ${testName}`);
+        results.push({ name: testName, passed: false });
+        return false;
+      }
+    }
+
+    const schema = defineSchema({
+      users: defineTable({
+        name: column.text(),
+        email: column.text(),
+        age: column.integer(),
+      }),
+      items: defineTable({
+        category: column.text(),
+        name: column.text(),
+        price: column.integer(),
+      }),
+    });
+
+    function SetupComponent({ onSetupComplete }) {
+      const db = useDatabase('sql-test-db');
+      const setupDone = useRef(false);
+      
+      useEffect(() => {
+        if (!db || setupDone.current) return;
+        setupDone.current = true;
+        
+        async function setup() {
+          try {
+            log('Setting up test data...');
+            
+            // Create users
+            await db.exec("INSERT INTO users (name, email, age) VALUES ('Alice', 'alice@test.com', 30)");
+            await db.exec("INSERT INTO users (name, email, age) VALUES ('Bob', 'bob@test.com', 25)");
+            await db.exec("INSERT INTO users (name, email, age) VALUES ('Carol', 'carol@test.com', 35)");
+            
+            // Create items with categories
+            await db.exec("INSERT INTO items (category, name, price) VALUES ('electronics', 'Phone', 500)");
+            await db.exec("INSERT INTO items (category, name, price) VALUES ('electronics', 'Laptop', 1000)");
+            await db.exec("INSERT INTO items (category, name, price) VALUES ('clothing', 'Shirt', 50)");
+            await db.exec("INSERT INTO items (category, name, price) VALUES ('clothing', 'Pants', 80)");
+            await db.exec("INSERT INTO items (category, name, price) VALUES ('food', 'Apple', 2)");
+            
+            log('Setup complete');
+            onSetupComplete({});
+          } catch (err) {
+            log('Setup error: ' + err.message);
+            console.error(err);
+          }
+        }
+        
+        setup();
+      }, [db, onSetupComplete]);
+      
+      return React.createElement('div', null, 'Setting up...');
+    }
+
+    function TestComponent({ onTestComplete }) {
+      const db = useDatabase('sql-test-db');
+      const [phase, setPhase] = useState(0);
+      const [searchName, setSearchName] = useState('Alice');
+      const phaseRef = useRef(0);
+      
+      // Test 1: Simple COUNT query (no reactivity)
+      const countQuery = useSQL(
+        'sql-test-db',
+        'SELECT COUNT(*) as count FROM users'
+      );
+      
+      // Test 2: Parameterized query with reactivity
+      const paramQuery = useSQL(
+        'sql-test-db',
+        'SELECT * FROM users WHERE name LIKE ?',
+        { params: ['%' + searchName + '%'], tables: ['users'] }
+      );
+      
+      // Test 3: GROUP BY with aggregate
+      const groupQuery = useSQL(
+        'sql-test-db',
+        `SELECT category, COUNT(*) as item_count, SUM(price) as total_price
+         FROM items
+         GROUP BY category
+         ORDER BY category`,
+        { tables: ['items'] }
+      );
+      
+      // Test 4: Subquery in SELECT
+      const subqueryQuery = useSQL(
+        'sql-test-db',
+        `SELECT 
+           category,
+           (SELECT MAX(price) FROM items i2 WHERE i2.category = items.category) as max_price
+         FROM items
+         GROUP BY category`,
+        { tables: ['items'] }
+      );
+      
+      // Test 5: HAVING clause
+      const havingQuery = useSQL(
+        'sql-test-db',
+        `SELECT category, COUNT(*) as cnt
+         FROM items
+         GROUP BY category
+         HAVING cnt >= 2`,
+        { tables: ['items'] }
+      );
+      
+      // Test 6: ORDER BY and LIMIT
+      const orderQuery = useSQL(
+        'sql-test-db',
+        'SELECT * FROM users ORDER BY age DESC LIMIT 1',
+        { tables: ['users'] }
+      );
+      
+      // Test 7: Complex WHERE with multiple conditions
+      const complexWhereQuery = useSQL(
+        'sql-test-db',
+        'SELECT * FROM items WHERE price > 10 AND price < 600 ORDER BY price',
+        { tables: ['items'] }
+      );
+
+      useEffect(() => {
+        if (phaseRef.current !== phase) return;
+        
+        async function runPhase() {
+          try {
+            // Phase 0: Test simple COUNT
+            if (phase === 0 && !countQuery.isLoading && countQuery.data) {
+              phaseRef.current = 1;
+              assert(countQuery.data.length === 1, 'Simple query returns data');
+              assert(countQuery.data[0].count === 3, 'COUNT shows 3 users');
+              setPhase(1);
+            }
+            
+            // Phase 1: Test param query
+            if (phase === 1 && !paramQuery.isLoading && paramQuery.data) {
+              phaseRef.current = 2;
+              assert(paramQuery.data.length === 1, 'Param query finds 1 Alice');
+              assert(paramQuery.data[0].name === 'Alice', 'Param query finds correct user');
+              setSearchName('Bob');
+              setPhase(2);
+            }
+            
+            // Phase 2: Test param reactivity
+            if (phase === 2 && !paramQuery.isLoading && paramQuery.data) {
+              if (paramQuery.data.length === 1 && paramQuery.data[0].name === 'Bob') {
+                phaseRef.current = 3;
+                assert(true, 'Param query re-runs when params change');
+                setPhase(3);
+              }
+            }
+            
+            // Phase 3: Test GROUP BY
+            if (phase === 3 && !groupQuery.isLoading && groupQuery.data) {
+              phaseRef.current = 4;
+              assert(groupQuery.data.length === 3, 'GROUP BY returns 3 categories');
+              const electronics = groupQuery.data.find(r => r.category === 'electronics');
+              assert(electronics && electronics.item_count === 2, 'GROUP BY counts correctly');
+              assert(electronics && electronics.total_price === 1500, 'SUM aggregate works');
+              setPhase(4);
+            }
+            
+            // Phase 4: Test subquery
+            if (phase === 4 && !subqueryQuery.isLoading && subqueryQuery.data) {
+              phaseRef.current = 5;
+              assert(subqueryQuery.data.length === 3, 'Subquery returns 3 categories');
+              const electronics = subqueryQuery.data.find(r => r.category === 'electronics');
+              assert(electronics && electronics.max_price === 1000, 'Subquery MAX works');
+              setPhase(5);
+            }
+            
+            // Phase 5: Test HAVING
+            if (phase === 5 && !havingQuery.isLoading && havingQuery.data) {
+              phaseRef.current = 6;
+              assert(havingQuery.data.length === 2, 'HAVING filters to 2 categories');
+              setPhase(6);
+            }
+            
+            // Phase 6: Test ORDER BY + LIMIT
+            if (phase === 6 && !orderQuery.isLoading && orderQuery.data) {
+              phaseRef.current = 7;
+              assert(orderQuery.data.length === 1, 'LIMIT returns 1 row');
+              assert(orderQuery.data[0].name === 'Carol', 'ORDER BY DESC returns oldest user');
+              assert(orderQuery.data[0].age === 35, 'Correct age returned');
+              setPhase(7);
+            }
+            
+            // Phase 7: Test complex WHERE
+            if (phase === 7 && !complexWhereQuery.isLoading && complexWhereQuery.data) {
+              phaseRef.current = 8;
+              assert(complexWhereQuery.data.length === 3, 'Complex WHERE returns correct rows');
+              assert(complexWhereQuery.data[0].price === 50, 'Results ordered by price');
+              setPhase(8);
+            }
+            
+            // Phase 8: Test table reactivity
+            if (phase === 8) {
+              phaseRef.current = 9;
+              log('Testing reactivity - inserting new item...');
+              await db.exec("INSERT INTO items (category, name, price) VALUES ('electronics', 'Tablet', 800)");
+              setPhase(9);
+            }
+            
+            // Phase 9: Verify GROUP BY updated
+            if (phase === 9 && !groupQuery.isLoading && groupQuery.data) {
+              const electronics = groupQuery.data.find(r => r.category === 'electronics');
+              if (electronics && electronics.item_count === 3) {
+                phaseRef.current = 10;
+                assert(true, 'GROUP BY query reactively updates when items table changes');
+                onTestComplete(results);
+              }
+            }
+            
+          } catch (err) {
+            log('Test error: ' + err.message);
+            console.error(err);
+            results.push({ name: 'Test error', passed: false, error: err.message });
+            onTestComplete(results);
+          }
+        }
+        
+        runPhase();
+      }, [phase, countQuery, paramQuery, groupQuery, subqueryQuery, havingQuery, orderQuery, complexWhereQuery, searchName, db, onTestComplete]);
+      
+      return React.createElement('div', null,
+        React.createElement('p', null, `Phase: ${phase}`),
+        React.createElement('p', null, `Count: ${countQuery.isLoading ? 'loading' : JSON.stringify(countQuery.data)}`),
+        countQuery.error && React.createElement('p', { style: { color: 'red' } }, `Error: ${countQuery.error.message}`)
+      );
+    }
+
+    function TestRunner() {
+      const [setupComplete, setSetupComplete] = useState(false);
+      const [complete, setComplete] = useState(false);
+
+      const handleSetupComplete = () => {
+        setSetupComplete(true);
+      };
+
+      const handleTestComplete = (testResults) => {
+        setComplete(true);
+        window.testResults = {
+          total: testResults.length,
+          passed: testResults.filter(r => r.passed).length,
+          failed: testResults.filter(r => !r.passed).length,
+          results: testResults
+        };
+        window.testsComplete = true;
+        log('');
+        log(`Tests complete: ${window.testResults.passed}/${window.testResults.total} passed`);
+        if (window.testResults.failed === 0) {
+          log('All tests passed!');
+        }
+      };
+
+      if (complete) {
+        return React.createElement('div', null, React.createElement('h2', null, 'Tests Complete'));
+      }
+
+      return React.createElement(
+        DatabaseProvider,
+        { name: 'sql-test-db', schema: schema, mode: 'local' },
+        !setupComplete
+          ? React.createElement(SetupComponent, { onSetupComplete: handleSetupComplete })
+          : React.createElement(TestComponent, { onTestComplete: handleTestComplete })
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(TestRunner, null));
+    window.pageReady = true;
+  </script>
+</body>
+</html>

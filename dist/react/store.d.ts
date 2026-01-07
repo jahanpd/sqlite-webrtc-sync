@@ -51,5 +51,9 @@ export declare function generateQueryKey(table: string, options: {
     };
     limit?: number;
 }): string;
+/**
+ * Generate a unique query key for raw SQL queries
+ */
+export declare function generateSQLQueryKey(sql: string, params?: unknown[]): string;
 export {};
 //# sourceMappingURL=store.d.ts.map

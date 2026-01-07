@@ -81,5 +81,13 @@ export interface QueryBuilderOptions {
   limit?: number;
 }
 
+// Raw SQL query options
+export interface SQLQueryOptions {
+  /** SQL parameters for prepared statements */
+  params?: unknown[];
+  /** Tables this query depends on (for reactivity) */
+  tables?: string[];
+}
+
 // Re-export types from main module
 export type { SyncableDatabase, PeerServerConfig, PeerInfo, SyncOperation };

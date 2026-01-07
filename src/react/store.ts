@@ -159,3 +159,16 @@ export function generateQueryKey(
   
   return parts.join('|');
 }
+
+/**
+ * Generate a unique query key for raw SQL queries
+ */
+export function generateSQLQueryKey(sql: string, params?: unknown[]): string {
+  const parts = ['sql', sql];
+  
+  if (params && params.length > 0) {
+    parts.push(`params:${JSON.stringify(params)}`);
+  }
+  
+  return parts.join('|');
+}

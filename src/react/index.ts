@@ -4,6 +4,7 @@ export { DatabaseProvider, useDatabaseContext, useDB } from './context';
 // Hooks
 export { useDatabase } from './hooks/useDatabase';
 export { useQuery } from './hooks/useQuery';
+export { useSQL } from './hooks/useSQL';
 export { useMutation } from './hooks/useMutation';
 export { useSyncStatus } from './hooks/useSyncStatus';
 export { usePeers } from './hooks/usePeers';
@@ -18,6 +19,7 @@ export type {
   PeersResult,
   WhereClause,
   OrderByClause,
+  SQLQueryOptions,
 } from './types';
 
 // Re-export schema types for convenience

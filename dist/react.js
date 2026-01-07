@@ -19210,6 +19210,13 @@ function generateQueryKey(table, options) {
   }
   return parts.join("|");
 }
+function generateSQLQueryKey(sql, params) {
+  const parts = ["sql", sql];
+  if (params && params.length > 0) {
+    parts.push(`params:${JSON.stringify(params)}`);
+  }
+  return parts.join("|");
+}
 
 // src/react/context.tsx
 import { jsx } from "react/jsx-runtime";
@@ -19427,14 +19434,60 @@ function useQuery(dbName, tableName) {
   return createQueryBuilder(dbName, tableName);
 }
 
+// src/react/hooks/useSQL.ts
+import { useState as useState3, useEffect as useEffect3, useCallback as useCallback2, useMemo } from "react";
+function useSQL(dbName, sql, options) {
+  const context = useDatabaseContext(dbName);
+  const { db, store } = context;
+  const [data, setData] = useState3(void 0);
+  const [isLoading, setIsLoading] = useState3(true);
+  const [error, setError] = useState3(null);
+  const paramsKey = useMemo(
+    () => JSON.stringify(options?.params ?? []),
+    [options?.params]
+  );
+  const queryKey = useMemo(
+    () => generateSQLQueryKey(sql, options?.params),
+    [sql, paramsKey]
+  );
+  const fetchData = useCallback2(async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      const result = await db.exec(sql, options?.params);
+      setData(result.rows);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+      setData(void 0);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [db, sql, paramsKey]);
+  const refetch = useCallback2(async () => {
+    await fetchData();
+  }, [fetchData]);
+  useEffect3(() => {
+    fetchData();
+    const tables = options?.tables;
+    if (tables && tables.length > 0) {
+      const unsubscribe = store.subscribe(queryKey, tables, () => {
+        fetchData();
+      });
+      return unsubscribe;
+    }
+    return void 0;
+  }, [fetchData, store, queryKey, options?.tables]);
+  return { data, isLoading, error, refetch };
+}
+
 // src/react/hooks/useMutation.ts
-import { useState as useState3, useCallback as useCallback2 } from "react";
+import { useState as useState4, useCallback as useCallback3 } from "react";
 function useMutation(dbName, tableName) {
   const context = useDatabaseContext(dbName);
   const { db, store } = context;
-  const [isLoading, setIsLoading] = useState3(false);
-  const [error, setError] = useState3(null);
-  const insert = useCallback2(async (data) => {
+  const [isLoading, setIsLoading] = useState4(false);
+  const [error, setError] = useState4(null);
+  const insert = useCallback3(async (data) => {
     setIsLoading(true);
     setError(null);
     try {
@@ -19463,7 +19516,7 @@ function useMutation(dbName, tableName) {
       setIsLoading(false);
     }
   }, [db, store, tableName]);
-  const update = useCallback2(async (id, data) => {
+  const update = useCallback3(async (id, data) => {
     setIsLoading(true);
     setError(null);
     try {
@@ -19489,7 +19542,7 @@ function useMutation(dbName, tableName) {
       setIsLoading(false);
     }
   }, [db, store, tableName]);
-  const remove = useCallback2(async (id) => {
+  const remove = useCallback3(async (id) => {
     setIsLoading(true);
     setError(null);
     try {
@@ -19516,19 +19569,19 @@ function useMutation(dbName, tableName) {
 }
 
 // src/react/hooks/useSyncStatus.ts
-import { useState as useState4, useEffect as useEffect3 } from "react";
+import { useState as useState5, useEffect as useEffect4 } from "react";
 function useSyncStatus(dbName) {
   const context = useDatabaseContext(dbName);
   const { db } = context;
   const isSyncingMode = typeof db.isConnected === "function";
-  const [status, setStatus] = useState4(() => ({
+  const [status, setStatus] = useState5(() => ({
     isConnected: isSyncingMode ? db.isConnected() : false,
     peerCount: db.getConnectedPeers?.()?.length ?? 0,
     pendingOperations: db.getQueuedOperations?.()?.length ?? 0,
     peerId: db.getPeerId?.() ?? null,
     mode: isSyncingMode ? "syncing" : "local"
   }));
-  useEffect3(() => {
+  useEffect4(() => {
     const updateStatus = () => {
       setStatus({
         isConnected: isSyncingMode ? db.isConnected() : false,
@@ -19553,14 +19606,14 @@ function useSyncStatus(dbName) {
 }
 
 // src/react/hooks/usePeers.ts
-import { useState as useState5, useEffect as useEffect4, useCallback as useCallback3 } from "react";
+import { useState as useState6, useEffect as useEffect5, useCallback as useCallback4 } from "react";
 function usePeers(dbName) {
   const context = useDatabaseContext(dbName);
   const { db } = context;
-  const [peers, setPeers] = useState5(
+  const [peers, setPeers] = useState6(
     () => db.getConnectedPeers?.() ?? []
   );
-  useEffect4(() => {
+  useEffect5(() => {
     const updatePeers = () => {
       setPeers(db.getConnectedPeers?.() ?? []);
     };
@@ -19574,18 +19627,18 @@ function usePeers(dbName) {
       clearInterval(interval);
     };
   }, [db]);
-  const connectToPeer = useCallback3(async (peerId) => {
+  const connectToPeer = useCallback4(async (peerId) => {
     await db.connectToPeer(peerId);
     setPeers(db.getConnectedPeers?.() ?? []);
   }, [db]);
-  const disconnectFromPeer = useCallback3(async (peerId) => {
+  const disconnectFromPeer = useCallback4(async (peerId) => {
     await db.disconnectFromPeer(peerId);
     setPeers(db.getConnectedPeers?.() ?? []);
   }, [db]);
-  const pushQueue = useCallback3(async () => {
+  const pushQueue = useCallback4(async () => {
     await db.pushQueuedOperations?.();
   }, [db]);
-  const clearQueue = useCallback3(() => {
+  const clearQueue = useCallback4(() => {
     db.clearQueue?.();
   }, [db]);
   return { peers, connectToPeer, disconnectFromPeer, pushQueue, clearQueue };
@@ -19598,5 +19651,6 @@ export {
   useMutation,
   usePeers,
   useQuery,
+  useSQL,
   useSyncStatus
 };

@@ -565,7 +565,7 @@ Syncable SQLite provides a complete React integration with typed hooks for queri
 
 ```tsx
 import { defineSchema, defineTable, column } from 'syncable-sqlite/schema';
-import { DatabaseProvider, useQuery, useMutation } from 'syncable-sqlite/react';
+import { DatabaseProvider, useQuery, useSQL, useMutation } from 'syncable-sqlite/react';
 
 // 1. Define your schema
 const schema = defineSchema({
@@ -694,7 +694,7 @@ import { DatabaseProvider } from 'syncable-sqlite/react';
 
 ### useQuery Hook
 
-Reactive queries with a builder pattern:
+Reactive queries with a builder pattern for simple table queries:
 
 ```tsx
 import { useQuery } from 'syncable-sqlite/react';
@@ -713,6 +713,75 @@ function MyComponent() {
 ```
 
 **Supported operators:** `=`, `!=`, `>`, `<`, `>=`, `<=`, `LIKE`, `IN`
+
+### useSQL Hook
+
+For complex queries with JOINs, subqueries, GROUP BY, HAVING, and other advanced SQL features:
+
+```tsx
+import { useSQL } from 'syncable-sqlite/react';
+
+// Define the result type for your query
+interface ContentWithNotes {
+  id: string;
+  title: string;
+  note_count: number;
+  dictation: string | null;
+}
+
+function MyComponent() {
+  const { data, isLoading, error, refetch } = useSQL<ContentWithNotes>(
+    'my-app',
+    `SELECT 
+      content.id,
+      content.title,
+      (SELECT COUNT(*) FROM notes WHERE notes.content_id = content.id) as note_count,
+      (SELECT GROUP_CONCAT(dictation.value) FROM dictation WHERE dictation.content_id = content.id) as dictation
+    FROM content
+    WHERE content.deleted = 0
+    GROUP BY content.id
+    HAVING note_count > 0`,
+    {
+      params: [],                                    // Optional SQL parameters
+      tables: ['content', 'notes', 'dictation'],    // Tables for reactivity
+    }
+  );
+
+  // data is typed as ContentWithNotes[] | undefined
+}
+```
+
+**Features:**
+- Full SQL flexibility (JOINs, subqueries, GROUP BY, HAVING, etc.)
+- Parameterized queries with `params` option (re-runs when params change)
+- Table reactivity with `tables` option (auto-refetch when tables change)
+- Generic return type `useSQL<T>` for typed results
+
+**Options:**
+- `params` (optional): Array of SQL parameters for prepared statements
+- `tables` (optional): Array of table names this query depends on for reactivity
+
+```tsx
+// Simple query without reactivity
+const { data } = useSQL<{ count: number }>('my-db', 'SELECT COUNT(*) as count FROM users');
+
+// Query with params (re-runs when userId changes)
+const { data } = useSQL<User>('my-db', 'SELECT * FROM users WHERE id = ?', {
+  params: [userId],
+  tables: ['users'],
+});
+
+// Complex aggregation
+const { data } = useSQL<CategoryStats>('my-db', `
+  SELECT category, COUNT(*) as count, SUM(price) as total
+  FROM products
+  GROUP BY category
+  HAVING count >= 5
+  ORDER BY total DESC
+`, {
+  tables: ['products'],
+});
+```
 
 ### useMutation Hook
 
