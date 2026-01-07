@@ -2,15 +2,20 @@
 function createColumn(type, isBoolean = false) {
   const col = {
     type,
-    nullable: false,
+    nullable: true,
     optional() {
+      return this;
+    },
+    required() {
       return {
         type,
-        nullable: true,
+        nullable: false,
         optional() {
           return this;
         },
-        _isBoolean: isBoolean
+        required() {
+          return this;
+        }
       };
     }
   };
@@ -18,18 +23,10 @@ function createColumn(type, isBoolean = false) {
   return col;
 }
 var column = {
-  /** TEXT column -> string */
   text: () => createColumn("TEXT"),
-  /** INTEGER column -> number */
   integer: () => createColumn("INTEGER"),
-  /** REAL column -> number (floating point) */
   real: () => createColumn("REAL"),
-  /** BLOB column -> Uint8Array */
   blob: () => createColumn("BLOB"),
-  /** 
-   * BOOLEAN column -> boolean 
-   * Stored as INTEGER (0/1) in SQLite
-   */
   boolean: () => createColumn("INTEGER", true)
 };
 
@@ -90,8 +87,97 @@ function generateCreateTableSQL(tableName, columns) {
   columnDefs.push("deleted INTEGER NOT NULL DEFAULT 0");
   return `CREATE TABLE IF NOT EXISTS ${tableName} (${columnDefs.join(", ")})`;
 }
+
+// src/schema/validation.ts
+function getColumnType(table, columnName) {
+  return table.columns[columnName] ?? null;
+}
+function validateValueType(value, columnName, expectedType) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  switch (expectedType) {
+    case "TEXT":
+      if (typeof value !== "string") {
+        return {
+          column: columnName,
+          message: `Column "${columnName}" is TEXT but got ${typeof value}`
+        };
+      }
+      break;
+    case "INTEGER":
+    case "REAL":
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return {
+          column: columnName,
+          message: `Column "${columnName}" is ${expectedType} but got ${typeof value}`
+        };
+      }
+      break;
+    case "BLOB":
+      if (!(value instanceof Uint8Array)) {
+        return {
+          column: columnName,
+          message: `Column "${columnName}" is BLOB but got ${typeof value}`
+        };
+      }
+      break;
+  }
+  return null;
+}
+function validateInsertData(table, data) {
+  const errors = [];
+  for (const [columnName, columnDef] of Object.entries(table.columns)) {
+    const value = data[columnName];
+    const typeError = validateValueType(value, columnName, columnDef.type);
+    if (typeError) {
+      errors.push(typeError);
+    }
+    if (!columnDef.nullable && (value === void 0 || value === null)) {
+      errors.push({
+        column: columnName,
+        message: `Column "${columnName}" is required but got undefined/null`
+      });
+    }
+  }
+  for (const columnName of Object.keys(data)) {
+    if (!table.columns[columnName]) {
+      errors.push({
+        column: columnName,
+        message: `Unknown column "${columnName}" in table "${table.name}"`
+      });
+    }
+  }
+  if (errors.length > 0) {
+    const messages = errors.map((e) => e.message).join("; ");
+    throw new Error(`Insert validation failed: ${messages}`);
+  }
+}
+function validateUpdateData(table, data) {
+  const errors = [];
+  for (const [columnName, value] of Object.entries(data)) {
+    const columnDef = getColumnType(table, columnName);
+    if (!columnDef) {
+      errors.push({
+        column: columnName,
+        message: `Unknown column "${columnName}" in table "${table.name}"`
+      });
+      continue;
+    }
+    const typeError = validateValueType(value, columnName, columnDef.type);
+    if (typeError) {
+      errors.push(typeError);
+    }
+  }
+  if (errors.length > 0) {
+    const messages = errors.map((e) => e.message).join("; ");
+    throw new Error(`Update validation failed: ${messages}`);
+  }
+}
 export {
   column,
   defineSchema,
-  defineTable
+  defineTable,
+  validateInsertData,
+  validateUpdateData
 };

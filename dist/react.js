@@ -19256,10 +19256,7 @@ function DatabaseProvider({
   const [error, setError] = useState(null);
   const storeRef = useRef(new QueryStore());
   const dbRef = useRef(null);
-  const initializedRef = useRef(false);
   useEffect(() => {
-    if (initializedRef.current) return;
-    initializedRef.current = true;
     let mounted = true;
     async function init() {
       try {
@@ -19360,16 +19357,16 @@ function useDatabase(dbName) {
 import { useState as useState2, useEffect as useEffect2, useCallback, useRef as useRef2 } from "react";
 function createQueryBuilder(dbName, tableName, options = { where: [] }) {
   return {
-    where(column, operator, value) {
+    where(column2, operator, value) {
       return createQueryBuilder(dbName, tableName, {
         ...options,
-        where: [...options.where, { column, operator, value }]
+        where: [...options.where, { column: column2, operator, value }]
       });
     },
-    orderBy(column, direction = "asc") {
+    orderBy(column2, direction = "asc") {
       return createQueryBuilder(dbName, tableName, {
         ...options,
-        orderBy: { column, direction }
+        orderBy: { column: column2, direction }
       });
     },
     limit(n) {
@@ -19460,16 +19457,7 @@ function useQuery(dbName, tableName) {
 import { useState as useState3, useEffect as useEffect3, useCallback as useCallback2, useMemo } from "react";
 function useSQL(dbName, sql, options) {
   const context = useDatabaseContext(dbName);
-  if (!context) {
-    return {
-      data: void 0,
-      isLoading: true,
-      error: null,
-      refetch: async () => {
-      }
-    };
-  }
-  const { db, store } = context;
+  const { db, store } = context ? context : { db: null, store: null };
   const [data, setData] = useState3(void 0);
   const [isLoading, setIsLoading] = useState3(true);
   const [error, setError] = useState3(null);
@@ -19482,6 +19470,7 @@ function useSQL(dbName, sql, options) {
     [sql, paramsKey]
   );
   const fetchData = useCallback2(async () => {
+    if (!db) return;
     try {
       setIsLoading(true);
       setError(null);
@@ -19498,6 +19487,7 @@ function useSQL(dbName, sql, options) {
     await fetchData();
   }, [fetchData]);
   useEffect3(() => {
+    if (!store) return;
     fetchData();
     const tables = options?.tables;
     if (tables && tables.length > 0) {
@@ -19508,35 +19498,121 @@ function useSQL(dbName, sql, options) {
     }
     return void 0;
   }, [fetchData, store, queryKey, options?.tables]);
+  if (!context) {
+    return {
+      data: void 0,
+      isLoading: true,
+      error: null,
+      refetch: async () => {
+      }
+    };
+  }
   return { data, isLoading, error, refetch };
 }
 
 // src/react/hooks/useMutation.ts
 import { useState as useState4, useCallback as useCallback3 } from "react";
+
+// src/schema/validation.ts
+function getColumnType(table, columnName) {
+  return table.columns[columnName] ?? null;
+}
+function validateValueType(value, columnName, expectedType) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  switch (expectedType) {
+    case "TEXT":
+      if (typeof value !== "string") {
+        return {
+          column: columnName,
+          message: `Column "${columnName}" is TEXT but got ${typeof value}`
+        };
+      }
+      break;
+    case "INTEGER":
+    case "REAL":
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return {
+          column: columnName,
+          message: `Column "${columnName}" is ${expectedType} but got ${typeof value}`
+        };
+      }
+      break;
+    case "BLOB":
+      if (!(value instanceof Uint8Array)) {
+        return {
+          column: columnName,
+          message: `Column "${columnName}" is BLOB but got ${typeof value}`
+        };
+      }
+      break;
+  }
+  return null;
+}
+function validateInsertData(table, data) {
+  const errors = [];
+  for (const [columnName, columnDef] of Object.entries(table.columns)) {
+    const value = data[columnName];
+    const typeError = validateValueType(value, columnName, columnDef.type);
+    if (typeError) {
+      errors.push(typeError);
+    }
+    if (!columnDef.nullable && (value === void 0 || value === null)) {
+      errors.push({
+        column: columnName,
+        message: `Column "${columnName}" is required but got undefined/null`
+      });
+    }
+  }
+  for (const columnName of Object.keys(data)) {
+    if (!table.columns[columnName]) {
+      errors.push({
+        column: columnName,
+        message: `Unknown column "${columnName}" in table "${table.name}"`
+      });
+    }
+  }
+  if (errors.length > 0) {
+    const messages = errors.map((e) => e.message).join("; ");
+    throw new Error(`Insert validation failed: ${messages}`);
+  }
+}
+function validateUpdateData(table, data) {
+  const errors = [];
+  for (const [columnName, value] of Object.entries(data)) {
+    const columnDef = getColumnType(table, columnName);
+    if (!columnDef) {
+      errors.push({
+        column: columnName,
+        message: `Unknown column "${columnName}" in table "${table.name}"`
+      });
+      continue;
+    }
+    const typeError = validateValueType(value, columnName, columnDef.type);
+    if (typeError) {
+      errors.push(typeError);
+    }
+  }
+  if (errors.length > 0) {
+    const messages = errors.map((e) => e.message).join("; ");
+    throw new Error(`Update validation failed: ${messages}`);
+  }
+}
+
+// src/react/hooks/useMutation.ts
 function useMutation(dbName, tableName) {
   const context = useDatabaseContext(dbName);
-  if (!context) {
-    return {
-      insert: async () => {
-        throw new Error("Database still initializing");
-      },
-      update: async () => {
-        throw new Error("Database still initializing");
-      },
-      remove: async () => {
-        throw new Error("Database still initializing");
-      },
-      isLoading: false,
-      error: new Error("Database still initializing")
-    };
-  }
-  const { db, store } = context;
+  const { db, store, schema } = context ? context : { db: null, store: null, schema: null };
   const [isLoading, setIsLoading] = useState4(false);
   const [error, setError] = useState4(null);
   const insert = useCallback3(async (data) => {
+    if (!db || !schema) return null;
     setIsLoading(true);
     setError(null);
     try {
+      const tableDef = schema.tables[tableName];
+      validateInsertData(tableDef, data);
       const columns = Object.keys(data);
       const values = Object.values(data);
       const placeholders = columns.map(() => "?").join(", ");
@@ -19561,12 +19637,25 @@ function useMutation(dbName, tableName) {
     } finally {
       setIsLoading(false);
     }
-  }, [db, store, tableName]);
+  }, [db, store, schema, tableName]);
   const update = useCallback3(async (id, data) => {
+    if (!db || !schema) return null;
     setIsLoading(true);
     setError(null);
     try {
+      const tableDef = schema.tables[tableName];
+      validateUpdateData(tableDef, data);
       const entries = Object.entries(data).filter(([_, v]) => v !== void 0);
+      if (entries.length === 0) {
+        const selectResult2 = await db.exec(
+          `SELECT * FROM ${String(tableName)} WHERE id = ?`,
+          [id]
+        );
+        if (selectResult2.rows.length > 0) {
+          return selectResult2.rows[0];
+        }
+        throw new Error(`Row with id "${id}" not found`);
+      }
       const setClauses = entries.map(([col]) => `${col} = ?`).join(", ");
       const values = entries.map(([_, v]) => v);
       const sql = `UPDATE ${String(tableName)} SET ${setClauses} WHERE id = ?`;
@@ -19587,8 +19676,9 @@ function useMutation(dbName, tableName) {
     } finally {
       setIsLoading(false);
     }
-  }, [db, store, tableName]);
+  }, [db, store, schema, tableName]);
   const remove = useCallback3(async (id) => {
+    if (!db) return null;
     setIsLoading(true);
     setError(null);
     try {
@@ -19611,6 +19701,21 @@ function useMutation(dbName, tableName) {
       setIsLoading(false);
     }
   }, [db, store, tableName]);
+  if (!context) {
+    return {
+      insert: async () => {
+        throw new Error("Database still initializing");
+      },
+      update: async () => {
+        throw new Error("Database still initializing");
+      },
+      remove: async () => {
+        throw new Error("Database still initializing");
+      },
+      isLoading: false,
+      error: new Error("Database still initializing")
+    };
+  }
   return { insert, update, remove, isLoading, error };
 }
 

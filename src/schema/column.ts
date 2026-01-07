@@ -1,46 +1,44 @@
 import type { ColumnDef, SQLType } from './types';
 
-// Internal column implementation
-interface ColumnImpl<T extends SQLType, N extends boolean> extends ColumnDef<T, N> {
+type ColumnBase<T extends SQLType> = {
+  type: T;
+  nullable: true;
+  optional(): ColumnDef<T, true>;
+  required(): ColumnDef<T, false>;
   _isBoolean?: boolean;
-}
+};
 
-// Create a column definition
-function createColumn<T extends SQLType>(type: T, isBoolean = false): ColumnImpl<T, false> {
-  const col: ColumnImpl<T, false> = {
+type RequiredColumn<T extends SQLType> = {
+  type: T;
+  nullable: false;
+  optional(): ColumnDef<T, true>;
+  required(): ColumnDef<T, false>;
+  _isBoolean?: boolean;
+};
+
+function createColumn<T extends SQLType>(type: T, isBoolean = false): ColumnBase<T> {
+  const col: ColumnBase<T> = {
     type,
-    nullable: false as const,
-    optional(): ColumnDef<T, true> {
+    nullable: true,
+    optional() { return this; },
+    required(): RequiredColumn<T> {
       return {
         type,
-        nullable: true as const,
-        optional() { return this; },
-        _isBoolean: isBoolean,
-      } as ColumnDef<T, true> & { _isBoolean?: boolean };
+        nullable: false,
+        optional() { return this as unknown as ColumnDef<T, true>; },
+        required() { return this; },
+      } as RequiredColumn<T>;
     },
   };
   if (isBoolean) col._isBoolean = true;
   return col;
 }
 
-// Column builders
 export const column = {
-  /** TEXT column -> string */
   text: () => createColumn('TEXT'),
-  
-  /** INTEGER column -> number */
   integer: () => createColumn('INTEGER'),
-  
-  /** REAL column -> number (floating point) */
   real: () => createColumn('REAL'),
-  
-  /** BLOB column -> Uint8Array */
   blob: () => createColumn('BLOB'),
-  
-  /** 
-   * BOOLEAN column -> boolean 
-   * Stored as INTEGER (0/1) in SQLite
-   */
   boolean: () => createColumn('INTEGER', true),
 };
 

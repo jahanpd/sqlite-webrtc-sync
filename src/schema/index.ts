@@ -4,7 +4,6 @@ export { defineTable } from './table';
 export { defineSchema } from './schema';
 export type { Schema } from './schema';
 
-// Type exports
 export type {
   SQLType,
   ColumnDef,
@@ -19,3 +18,5 @@ export type {
   TableNames,
   RowType,
 } from './types';
+
+export { validateInsertData, validateUpdateData } from './validation';

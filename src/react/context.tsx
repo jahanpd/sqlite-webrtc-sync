@@ -41,13 +41,9 @@ export function DatabaseProvider<S extends SchemaDef>({
   const [error, setError] = useState<Error | null>(null);
   const storeRef = useRef<QueryStore>(new QueryStore());
   const dbRef = useRef<SyncableDatabase | null>(null);
-  const initializedRef = useRef(false);
 
   // Initialize database
   useEffect(() => {
-    if (initializedRef.current) return;
-    initializedRef.current = true;
-
     let mounted = true;
 
     async function init() {

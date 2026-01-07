@@ -14,9 +14,9 @@ test.describe('React Integration', () => {
 
       const schema = defineSchema({
         users: defineTable({
-          name: column.text(),
-          age: column.integer().optional(),
-          active: column.boolean(),
+          name: column.text().required(),
+          age: column.integer(),
+          active: column.boolean().required(),
         }),
       });
 
@@ -25,7 +25,7 @@ test.describe('React Integration', () => {
 
       return {
         hasUserTable: 'users' in schema.tables,
-        sqlContainsName: sql.includes('name TEXT'),
+        sqlContainsName: sql.includes('name TEXT NOT NULL'),
         sqlContainsAge: sql.includes('age INTEGER'),
         sqlContainsId: sql.includes('id TEXT PRIMARY KEY'),
         sqlContainsUpdatedAt: sql.includes('updated_at INTEGER'),
@@ -51,11 +51,11 @@ test.describe('React Integration', () => {
 
       const schema = defineSchema({
         items: defineTable({
-          textCol: column.text(),
-          intCol: column.integer(),
-          realCol: column.real(),
-          boolCol: column.boolean(),
-          optionalText: column.text().optional(),
+          textCol: column.text().required(),
+          intCol: column.integer().required(),
+          realCol: column.real().required(),
+          boolCol: column.boolean().required(),
+          optionalText: column.text(),
         }),
       });
 

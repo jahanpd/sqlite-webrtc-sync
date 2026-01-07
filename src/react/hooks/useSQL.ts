@@ -47,20 +47,12 @@ export function useSQL<T = Record<string, unknown>>(
 ): QueryResult<T> {
   const context = useDatabaseContext(dbName);
 
-  if (!context) {
-    return {
-      data: undefined,
-      isLoading: true,
-      error: null,
-      refetch: async () => {},
-    };
-  }
-
-  const { db, store } = context;
+  const { db, store } = context ? context : {db: null, store: null};
   
   const [data, setData] = useState<T[] | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+
   
   // Memoize params to detect changes
   const paramsKey = useMemo(
@@ -76,6 +68,7 @@ export function useSQL<T = Record<string, unknown>>(
   
   // Fetch function
   const fetchData = useCallback(async () => {
+		if (!db) return
     try {
       setIsLoading(true);
       setError(null);
@@ -97,6 +90,7 @@ export function useSQL<T = Record<string, unknown>>(
   
   // Initial fetch and subscription
   useEffect(() => {
+		if (!store) return
     fetchData();
     
     // Only subscribe if tables are specified for reactivity
@@ -113,5 +107,14 @@ export function useSQL<T = Record<string, unknown>>(
     return undefined;
   }, [fetchData, store, queryKey, options?.tables]);
   
+  if (!context) {
+    return {
+      data: undefined,
+      isLoading: true,
+      error: null,
+      refetch: async () => {},
+    };
+  }
+
   return { data, isLoading, error, refetch };
 }

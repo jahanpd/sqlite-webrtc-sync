@@ -3,4 +3,5 @@ export { defineTable } from './table';
 export { defineSchema } from './schema';
 export type { Schema } from './schema';
 export type { SQLType, ColumnDef, ColumnsDefinition, TableDef, SchemaDef, SystemColumns, InferRow, InferSchema, InsertData, UpdateData, TableNames, RowType, } from './types';
+export { validateInsertData, validateUpdateData } from './validation';
 //# sourceMappingURL=index.d.ts.map

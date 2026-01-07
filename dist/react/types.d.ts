@@ -1,5 +1,5 @@
 import type { SyncableDatabase, PeerServerConfig, PeerInfo, SyncOperation } from '../index';
-import type { Schema, SchemaDef, InsertData, UpdateData } from '../schema';
+import type { Schema, SchemaDef, InsertData, UpdateData, TableDef } from '../schema';
 import type { QueryStore } from './store';
 export interface DatabaseContextValue<S extends SchemaDef = SchemaDef> {
     db: SyncableDatabase;
@@ -8,17 +8,11 @@ export interface DatabaseContextValue<S extends SchemaDef = SchemaDef> {
     name: string;
 }
 export interface DatabaseProviderProps<S extends SchemaDef> {
-    /** Unique database name */
     name: string;
-    /** Schema definition */
     schema: Schema<S>;
-    /** Database mode */
     mode: 'syncing' | 'local';
-    /** PeerJS server config (required for syncing mode) */
     peerServer?: PeerServerConfig;
-    /** Discovery interval in ms (default: 5000) */
     discoveryInterval?: number;
-    /** Children */
     children: React.ReactNode;
 }
 export interface QueryResult<T> {
@@ -27,10 +21,10 @@ export interface QueryResult<T> {
     error: Error | null;
     refetch: () => Promise<void>;
 }
-export interface MutationResult<Row> {
-    insert: (data: InsertData<Row>) => Promise<Row>;
-    update: (id: string, data: UpdateData<Row>) => Promise<Row>;
-    remove: (id: string) => Promise<Row>;
+export interface MutationResult<Row, T extends TableDef = TableDef> {
+    insert: (data: InsertData<T>) => Promise<Row | null>;
+    update: (id: string, data: UpdateData<T>) => Promise<Row | null>;
+    remove: (id: string) => Promise<Row | null>;
     isLoading: boolean;
     error: Error | null;
 }
