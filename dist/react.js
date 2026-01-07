@@ -11589,13 +11589,17 @@ var databases = /* @__PURE__ */ new Map();
 var lastProcessedSql = /* @__PURE__ */ new Map();
 var lastAffectedRows = /* @__PURE__ */ new Map();
 async function initSqlite() {
+  console.log("[Worker] Initializing SQLite WASM module...");
   const module = await sqlite_wasm_default({
     print: console.log,
     printErr: console.error
   });
   sqlite3 = module;
+  console.log("[Worker] SQLite WASM module initialized successfully");
+  console.log("[Worker] OPFS directory:", sqlite3?.capi.sqlite3_wasmfs_opfs_dir?.() || "opfs");
 }
 function createDb(dbName) {
+  console.log(\`[Worker] Creating database: \${dbName}\`);
   if (!sqlite3) {
     throw new Error("SQLite not initialized");
   }
@@ -11605,6 +11609,7 @@ function createDb(dbName) {
   const db = new sqlite3.oo1.OpfsDb(\`\${OPFS_VFS}/\${dbName}.db\`);
   databases.set(dbName, db);
   initializeSchema(db);
+  console.log(\`[Worker] Database \${dbName} created successfully\`);
   return db;
 }
 function exportDatabase(db) {
@@ -18679,10 +18684,12 @@ var SyncableDatabase = class _SyncableDatabase {
     return db;
   }
   async init() {
+    console.log(`[SyncableDatabase] Starting initialization for database: ${this.dbName}`);
     if (typeof window === "undefined" && typeof Worker === "undefined") {
       throw new Error("SyncableDatabase requires a browser environment");
     }
     const baseUrl = new URL("./", import.meta.url).href;
+    console.log(`[SyncableDatabase] Base URL for assets: ${baseUrl}`);
     const { workerCode: workerCode2 } = await Promise.resolve().then(() => (init_worker_string(), worker_string_exports));
     const modifiedWorkerCode = workerCode2.replace(
       /import\.meta\.url/g,
@@ -18690,6 +18697,7 @@ var SyncableDatabase = class _SyncableDatabase {
     );
     const workerBlob = new Blob([modifiedWorkerCode], { type: "application/javascript" });
     const workerUrl = URL.createObjectURL(workerBlob);
+    console.log(`[SyncableDatabase] Worker blob URL created`);
     this.worker = new Worker(workerUrl, { type: "module" });
     this.worker.onmessage = (event) => {
       const { id, success, result, error } = event.data;
@@ -18706,10 +18714,16 @@ var SyncableDatabase = class _SyncableDatabase {
     this.worker.onerror = (error) => {
       console.error("Worker error:", error);
     };
+    console.log(`[SyncableDatabase] Sending init request to worker...`);
     await this.sendRequest("init", this.dbName, []);
+    console.log(`[SyncableDatabase] SQLite WASM initialized successfully`);
+    console.log(`[SyncableDatabase] Creating database: ${this.dbName}`);
     await this.sendRequest("createDb", this.dbName, []);
+    console.log(`[SyncableDatabase] Database created successfully`);
     this.isInitialized = true;
+    console.log(`[SyncableDatabase] Initialization complete for database: ${this.dbName}`);
     if (this.mode === "syncing") {
+      console.log(`[SyncableDatabase] Initializing peer connection...`);
       await this.initPeer();
       this.startDiscovery();
     }

@@ -11549,13 +11549,17 @@ var databases = /* @__PURE__ */ new Map();
 var lastProcessedSql = /* @__PURE__ */ new Map();
 var lastAffectedRows = /* @__PURE__ */ new Map();
 async function initSqlite() {
+  console.log("[Worker] Initializing SQLite WASM module...");
   const module = await sqlite_wasm_default({
     print: console.log,
     printErr: console.error
   });
   sqlite3 = module;
+  console.log("[Worker] SQLite WASM module initialized successfully");
+  console.log("[Worker] OPFS directory:", sqlite3?.capi.sqlite3_wasmfs_opfs_dir?.() || "opfs");
 }
 function createDb(dbName) {
+  console.log(\`[Worker] Creating database: \${dbName}\`);
   if (!sqlite3) {
     throw new Error("SQLite not initialized");
   }
@@ -11565,6 +11569,7 @@ function createDb(dbName) {
   const db = new sqlite3.oo1.OpfsDb(\`\${OPFS_VFS}/\${dbName}.db\`);
   databases.set(dbName, db);
   initializeSchema(db);
+  console.log(\`[Worker] Database \${dbName} created successfully\`);
   return db;
 }
 function exportDatabase(db) {
