@@ -4,438 +4,92 @@ A browser-based SQLite database with OPFS persistence and WebRTC peer-to-peer sy
 
 ## Features
 
-- **SQLite in the browser** - Full SQLite powered by SQLite WASM
-- **Persistent storage** - Uses OPFS (Origin Private File System) for durable storage
-- **P2P syncing** - Sync databases between browsers using WebRTC (via PeerJS)
-- **Automatic schema** - Tables automatically get `id`, `updated_at`, and `deleted` columns
-- **Last-write-wins merge** - Conflict resolution based on timestamps
-- **Soft deletes** - Deleted rows are marked, not removed, enabling proper sync
-- **React integration** - Fully typed hooks with reactive queries and mutations
-- **Schema-driven types** - Define your schema once, get TypeScript types everywhere
+- SQLite in the browser via WebAssembly
+- Persistent storage using OPFS (Origin Private File System)
+- P2P syncing via WebRTC (PeerJS)
+- Automatic schema columns (`id`, `updated_at`, `deleted`)
+- Last-write-wins conflict resolution
+- Soft deletes for proper sync behavior
+- React hooks with full TypeScript support
+- Schema-driven type inference
 
 ## Installation
 
 ```bash
 npm install syncable-sqlite
-
-# For React integration, ensure React 18+ is installed
-npm install react react-dom
 ```
-
-### Installing from GitHub
-
-```bash
-# Install directly from GitHub
-npm install github:your-username/syncable-sqlite
-
-# Or with a specific branch/tag
-npm install github:your-username/syncable-sqlite#main
-```
-
-## Vite Integration
-
-When using this package with Vite, you need some additional configuration to ensure the SQLite WASM files are handled correctly.
-
-### Vite Dev Server
-
-Add the plugin and configure the server in your `vite.config.js`:
-
-```javascript
-import { defineConfig } from 'vite';
-import { syncableSqliteVitePlugin } from 'syncable-sqlite';
-
-export default defineConfig({
-  plugins: [syncableSqliteVitePlugin()],
-  server: {
-    headers: {
-      // Required for SharedArrayBuffer (used by SQLite WASM)
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
-  },
-  optimizeDeps: {
-    exclude: ['syncable-sqlite'],
-  },
-});
-```
-
-### Vite Production Build
-
-For production builds, SQLite WASM requires additional files to be copied to your output directory. Add this plugin to your `vite.config.js`:
-
-```javascript
-import { defineConfig } from 'vite';
-import { syncableSqliteVitePlugin } from 'syncable-sqlite';
-import { copyFileSync, mkdirSync, existsSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Plugin to copy SQLite WASM assets to dist during build
-function copySqliteAssetsPlugin() {
-  return {
-    name: 'copy-sqlite-assets',
-    writeBundle() {
-      const srcDir = resolve(__dirname, 'node_modules/syncable-sqlite/dist');
-      const destDir = resolve(__dirname, 'dist/assets');
-      
-      mkdirSync(destDir, { recursive: true });
-      
-      // Files required for SQLite WASM with OPFS support
-      const filesToCopy = [
-        'sqlite3.wasm',                    // Main WASM binary
-        'sqlite3-opfs-async-proxy.js',     // OPFS async worker
-      ];
-      
-      for (const file of filesToCopy) {
-        const src = resolve(srcDir, file);
-        const dest = resolve(destDir, file);
-        if (existsSync(src)) {
-          copyFileSync(src, dest);
-          console.log(`Copied ${file} to dist/assets/`);
-        }
-      }
-    },
-    configurePreviewServer(server) {
-      // Set correct MIME types for SQLite assets
-      server.middlewares.use((req, res, next) => {
-        if (req.url?.endsWith('.wasm')) {
-          res.setHeader('Content-Type', 'application/wasm');
-        }
-        next();
-      });
-    },
-  };
-}
-
-export default defineConfig({
-  plugins: [syncableSqliteVitePlugin(), copySqliteAssetsPlugin()],
-  server: {
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
-  },
-  preview: {
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
-  },
-  optimizeDeps: {
-    exclude: ['syncable-sqlite'],
-  },
-});
-```
-
-### Why is this needed?
-
-1. **WASM Loading**: SQLite WASM uses `import.meta.url` to locate the `.wasm` file. The package handles this automatically by injecting the correct URL at runtime.
-
-2. **OPFS Worker**: SQLite's OPFS (Origin Private File System) persistence requires a separate worker file (`sqlite3-opfs-async-proxy.js`). This file must be available in production.
-
-3. **CORS Headers**: SQLite WASM uses `SharedArrayBuffer`, which requires specific CORS headers (`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`).
-
-4. **MIME Types**: The `.wasm` file must be served with `application/wasm` content type.
 
 ## Quick Start
 
-### Create a Local Database
-
 ```javascript
 import { createDatabase } from 'syncable-sqlite';
 
-// Create a local-only database
 const db = await createDatabase('my-database', { mode: 'local' });
 
-// Create a table
 await db.exec('CREATE TABLE tasks (title TEXT, completed INTEGER)');
-
-// Insert data
 await db.exec("INSERT INTO tasks (title, completed) VALUES ('Buy groceries', 0)");
 
-// Query data
 const result = await db.exec('SELECT * FROM tasks');
 console.log(result.rows);
-// [{ id: 'uuid-here', title: 'Buy groceries', completed: 0, updated_at: 1234567890, deleted: 0 }]
+// [{ id: 'uuid', title: 'Buy groceries', completed: 0, updated_at: 1234567890, deleted: 0 }]
 
-// Close when done
 await db.close();
 ```
 
-### Create a Syncing Database
+---
+
+## Core API
+
+### `createDatabase(name, config)`
+
+Creates a new database instance.
 
 ```javascript
 import { createDatabase } from 'syncable-sqlite';
 
-// Create a database with peer syncing enabled
-const db = await createDatabase('my-syncing-db', { 
+// Local mode
+const db = await createDatabase('my-db', { mode: 'local' });
+
+// Syncing mode
+const db = await createDatabase('my-db', {
   mode: 'syncing',
   peerServer: {
     host: 'localhost',
     port: 9000,
     path: '/',
     secure: false
-  }
+  },
+  discoveryInterval: 5000  // optional, default 5000ms
 });
-
-// Get this database's peer ID (share this with other peers)
-const peerId = db.getPeerId();
-console.log('My peer ID:', peerId);
 ```
-
-## API Reference
-
-### `createDatabase(name, config)`
-
-Creates a new database instance.
-
-**Parameters:**
-- `name` (string) - Unique name for the database
-- `config` (object)
-  - `mode` ('local' | 'syncing') - Database mode
-  - `peerServer` (optional) - PeerJS server configuration
-    - `host` (string) - Server hostname
-    - `port` (number) - Server port
-    - `path` (string) - Server path
-    - `secure` (boolean) - Use HTTPS/WSS
-
-**Returns:** `Promise<SyncableDatabase>`
 
 ### `db.exec(sql, params?)`
 
-Execute a SQL statement.
+Execute SQL statements. Returns `{ rows, columns, affectedRows }`.
 
 ```javascript
-// Create table
 await db.exec('CREATE TABLE users (name TEXT, email TEXT)');
-
-// Insert (id, updated_at, deleted are auto-generated)
-await db.exec("INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')");
-
-// Update (updated_at is auto-updated)
-await db.exec("UPDATE users SET name = 'Alicia' WHERE email = 'alice@example.com'");
-
-// Delete (converts to soft delete)
-await db.exec("DELETE FROM users WHERE email = 'alice@example.com'");
-
-// Select (automatically excludes soft-deleted rows)
-const result = await db.exec('SELECT * FROM users');
+await db.exec("INSERT INTO users (name, email) VALUES (?, ?)", ['Alice', 'alice@example.com']);
+await db.exec("UPDATE users SET name = ? WHERE email = ?", ['Alicia', 'alice@example.com']);
+await db.exec("DELETE FROM users WHERE email = ?", ['alice@example.com']);
+const result = await db.exec('SELECT * FROM users WHERE name = ?', ['Alicia']);
 ```
 
-**Returns:** `Promise<{ rows: object[], columns: string[] }>`
-
-### `db.export()`
-
-Export the database as a byte array.
+### Export / Import
 
 ```javascript
-const data = await db.export();
-// data is a Uint8Array containing SQL statements
-```
-
-**Returns:** `Promise<Uint8Array>`
-
-### `db.import(data)`
-
-Import data into the database.
-
-```javascript
-const data = await otherDb.export();
-await db.import(data);
-```
-
-### `db.merge(remoteData)`
-
-Merge remote data using last-write-wins conflict resolution.
-
-```javascript
-const remoteData = await otherDb.export();
-await db.merge(remoteData);
-// Rows with newer updated_at timestamps win
-// Deleted rows are excluded
-```
-
-### `db.getPeerId()`
-
-Get this database's peer ID (only in syncing mode).
-
-```javascript
-const peerId = db.getPeerId();
-// Share this ID with other peers so they can connect
-```
-
-**Returns:** `string | null`
-
-### `db.connectToPeer(peerId)`
-
-Connect to another peer (only in syncing mode).
-
-```javascript
-await db.connectToPeer('remote-peer-id-here');
-```
-
-### `db.disconnectFromPeer(peerId)`
-
-Disconnect from a peer.
-
-```javascript
-await db.disconnectFromPeer('remote-peer-id-here');
-```
-
-### `db.getConnectedPeers()`
-
-Get list of connected peers.
-
-```javascript
-const peers = db.getConnectedPeers();
-// [{ id: 'peer-id', status: 'connected' }]
-```
-
-**Returns:** `PeerInfo[]`
-
-### `db.exportToPeer(peerId)`
-
-Request data from a remote peer and import it locally.
-
-```javascript
-// Pull remote peer's data into this database
-await db.exportToPeer('remote-peer-id');
-```
-
-### `db.importFromPeer(peerId)`
-
-Send this database's data to a remote peer.
-
-```javascript
-// Push this database's data to remote peer
-await db.importFromPeer('remote-peer-id');
-```
-
-### `db.exportToAllPeers()` / `db.importFromAllPeers()`
-
-Batch operations for all connected peers.
-
-```javascript
-await db.exportToAllPeers(); // Pull from all peers
-await db.importFromAllPeers(); // Push to all peers
-```
-
-## Auto-Discovery & Real-Time Sync
-
-When using syncing mode with a PeerJS server that has `--allow_discovery` enabled, databases with the same name automatically discover and connect to each other.
-
-### Auto-Discovery
-
-Peer IDs are formatted as `{dbName}-{uuid}`, allowing peers sharing the same database name to automatically find each other. Discovery runs every 5 seconds by default.
-
-```javascript
-// Both instances will auto-discover each other
-const dbA = await createDatabase('shared-db', { mode: 'syncing', peerServer: config });
-const dbB = await createDatabase('shared-db', { mode: 'syncing', peerServer: config });
-
-// After ~5 seconds, they're connected automatically
-console.log(dbA.isConnected()); // true
-```
-
-### `db.discoverPeers()`
-
-Manually trigger peer discovery.
-
-```javascript
-await db.discoverPeers();
-```
-
-### `db.isConnected()`
-
-Check if connected to any peers.
-
-```javascript
-if (db.isConnected()) {
-  console.log('Connected to at least one peer');
-}
-```
-
-**Returns:** `boolean`
-
-### Real-Time Sync
-
-When connected, INSERT/UPDATE/DELETE operations are automatically broadcast to all connected peers in real-time.
-
-```javascript
-// On Peer A
-await dbA.exec("INSERT INTO items (name) VALUES ('new-item')");
-
-// Peer B automatically receives the change (no manual sync needed)
-```
-
-### Offline Queue
-
-Operations performed while disconnected are queued and can be pushed when reconnecting.
-
-### `db.getQueuedOperations()`
-
-Get pending operations in the offline queue.
-
-```javascript
-const queue = db.getQueuedOperations();
-console.log(`${queue.length} operations queued`);
-```
-
-**Returns:** `SyncOperation[]`
-
-### `db.pushQueuedOperations()`
-
-Send all queued operations to connected peers.
-
-```javascript
-// After reconnecting
-if (db.isConnected()) {
-  await db.pushQueuedOperations();
-}
-```
-
-### `db.clearQueue()`
-
-Discard all queued operations.
-
-```javascript
-db.clearQueue();
-```
-
-### Event Callbacks
-
-Register callbacks for sync events.
-
-### `db.onPeerConnected(callback)`
-
-Called when a peer connects.
-
-```javascript
-db.onPeerConnected((peerId) => {
-  console.log(`Peer connected: ${peerId}`);
-});
-```
-
-### `db.onPeerDisconnected(callback)`
-
-Called when a peer disconnects.
-
-```javascript
-db.onPeerDisconnected((peerId) => {
-  console.log(`Peer disconnected: ${peerId}`);
-});
-```
-
-### `db.onSyncReceived(callback)`
-
-Called when a sync operation is received from a peer.
-
-```javascript
-db.onSyncReceived((operation) => {
-  console.log(`Received sync: ${operation.table} - ${operation.rowId}`);
-});
+// SQL dump format (for syncing/merging)
+const sqlDump = await db.export();
+await db.import(sqlDump);
+await db.merge(remoteSqlDump);  // last-write-wins merge
+
+// Native SQLite binary format (for file storage)
+const binary = await db.exportBinary();
+await db.importBinary(binary);       // replaces entire database
+await db.mergeBinary(binary);        // last-write-wins merge
+
+// Download as file
+await db.saveToFile('backup.sqlite');
 ```
 
 ### `db.close()`
@@ -446,128 +100,68 @@ Close the database and clean up resources.
 await db.close();
 ```
 
-## Automatic Schema
+---
 
-When you create a table, three columns are automatically added:
+## Syncing API
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | TEXT PRIMARY KEY | Auto-generated UUID |
-| `updated_at` | INTEGER | Unix timestamp (ms), auto-updated |
-| `deleted` | INTEGER | 0 = active, 1 = soft-deleted |
+Available when `mode: 'syncing'`.
+
+### Peer Management
 
 ```javascript
-// You write:
-await db.exec('CREATE TABLE tasks (title TEXT)');
-
-// Actual schema:
-// CREATE TABLE tasks (
-//   title TEXT,
-//   id TEXT PRIMARY KEY,
-//   updated_at INTEGER NOT NULL,
-//   deleted INTEGER NOT NULL DEFAULT 0
-// )
+const peerId = db.getPeerId();                    // Get this database's peer ID
+await db.connectToPeer('remote-peer-id');         // Connect to a peer
+await db.disconnectFromPeer('remote-peer-id');    // Disconnect from a peer
+const peers = db.getConnectedPeers();             // [{ id, status }]
+const connected = db.isConnected();               // boolean
 ```
 
-## Sync Behavior
-
-### Conflict Resolution
-
-When merging databases, conflicts are resolved using **last-write-wins**:
-
-1. Rows are matched by `id`
-2. The row with the higher `updated_at` timestamp wins
-3. Soft-deleted rows (`deleted = 1`) are excluded from query results
-
-### Sync Example
+### Data Sync
 
 ```javascript
-// Peer A
-const dbA = await createDatabase('db-a', { mode: 'syncing', peerServer: config });
-await dbA.exec('CREATE TABLE items (name TEXT)');
-await dbA.exec("INSERT INTO items (name) VALUES ('from-a')");
-
-// Peer B
-const dbB = await createDatabase('db-b', { mode: 'syncing', peerServer: config });
-await dbB.exec('CREATE TABLE items (name TEXT)');
-await dbB.exec("INSERT INTO items (name) VALUES ('from-b')");
-
-// Connect B to A
-await dbB.connectToPeer(dbA.getPeerId());
-
-// Sync: B pulls A's data
-await dbB.exportToPeer(dbA.getPeerId());
-
-// Sync: A pulls B's data  
-await dbA.exportToPeer(dbB.getPeerId());
-
-// Both now have: 'from-a' and 'from-b'
+await db.exportToPeer(peerId);      // Pull remote peer's data into local
+await db.importFromPeer(peerId);    // Push local data to remote peer
+await db.exportToAllPeers();        // Pull from all peers
+await db.importFromAllPeers();      // Push to all peers
 ```
 
-## Running a PeerJS Server
+### Auto-Discovery
 
-For local development or self-hosted deployments:
-
-```bash
-# Install
-npm install --save-dev peer
-
-# Run server (with discovery enabled for auto-discovery feature)
-npx peerjs --port 9000 --allow_discovery
-```
-
-Then configure your database:
+Peers with the same database name automatically discover each other when using a PeerJS server with `--allow_discovery`.
 
 ```javascript
-const db = await createDatabase('my-db', {
-  mode: 'syncing',
-  peerServer: {
-    host: 'localhost',
-    port: 9000,
-    path: '/',
-    secure: false
-  }
-});
+await db.discoverPeers();  // Manually trigger discovery
 ```
 
-## Development
+### Offline Queue
 
-```bash
-# Install dependencies
-npm install
+Operations performed while disconnected are queued.
 
-# Build
-npm run build
-
-# Start dev server
-bun server.mjs
-
-# Start PeerJS server (for sync tests)
-npx peerjs --port 9000
-
-# Run tests
-npx playwright test
+```javascript
+const queue = db.getQueuedOperations();   // Get pending operations
+await db.pushQueuedOperations();          // Send queued ops to peers
+db.clearQueue();                          // Discard queued ops
 ```
 
-## Requirements
+### Event Callbacks
 
-- Modern browser with support for:
-  - ES2022
-  - Web Workers
-  - OPFS (Origin Private File System)
-  - WebRTC (for syncing mode)
+```javascript
+db.onPeerConnected((peerId) => console.log('Connected:', peerId));
+db.onPeerDisconnected((peerId) => console.log('Disconnected:', peerId));
+db.onSyncReceived((operation) => console.log('Sync:', operation.table, operation.rowId));
+db.onMutation((tables) => console.log('Mutation in:', tables));
+```
 
-## React Integration
+---
 
-Syncable SQLite provides a complete React integration with typed hooks for queries, mutations, and sync status.
+## React API
 
-### Quick Start with React
+### Setup
 
 ```tsx
 import { defineSchema, defineTable, column } from 'syncable-sqlite/schema';
-import { DatabaseProvider, useQuery, useSQL, useMutation } from 'syncable-sqlite/react';
+import { DatabaseProvider, useQuery, useMutation } from 'syncable-sqlite/react';
 
-// 1. Define your schema
 const schema = defineSchema({
   todos: defineTable({
     title: column.text(),
@@ -576,48 +170,16 @@ const schema = defineSchema({
   }),
 });
 
-// 2. Wrap your app with DatabaseProvider
 function App() {
   return (
-    <DatabaseProvider 
-      name="my-app" 
-      schema={schema} 
-      mode="local"
-    >
+    <DatabaseProvider name="my-app" schema={schema} mode="local">
       <TodoList />
     </DatabaseProvider>
-  );
-}
-
-// 3. Use hooks in your components
-function TodoList() {
-  const { data, isLoading } = useQuery('my-app', 'todos')
-    .where('completed', '=', false)
-    .orderBy('updated_at', 'desc')
-    .exec();
-
-  const { insert } = useMutation('my-app', 'todos');
-
-  if (isLoading) return <div>Loading...</div>;
-
-  return (
-    <div>
-      <button onClick={() => insert({ title: 'New Todo', completed: false })}>
-        Add Todo
-      </button>
-      <ul>
-        {data?.map(todo => (
-          <li key={todo.id}>{todo.title}</li>
-        ))}
-      </ul>
-    </div>
   );
 }
 ```
 
 ### Schema Definition
-
-Define your database schema with full TypeScript support:
 
 ```typescript
 import { defineSchema, defineTable, column } from 'syncable-sqlite/schema';
@@ -626,63 +188,35 @@ const schema = defineSchema({
   users: defineTable({
     name: column.text(),
     email: column.text(),
-    age: column.integer().optional(),  // Nullable column
+    age: column.integer().optional(),
     active: column.boolean(),
-  }),
-  posts: defineTable({
-    title: column.text(),
-    content: column.text(),
-    authorId: column.text(),
   }),
 });
 
-// TypeScript infers the full row type including system columns:
-// {
-//   id: string;
-//   name: string;
-//   email: string;
-//   age: number | null;
-//   active: boolean;
-//   updated_at: number;
-//   deleted: number;
-// }
+// Column types:
+// column.text()     -> string
+// column.integer()  -> number
+// column.real()     -> number
+// column.boolean()  -> boolean (stored as INTEGER 0/1)
+// column.blob()     -> Uint8Array
+// .optional()       -> makes column nullable
 ```
-
-**Available column types:**
-
-| Method | SQLite Type | TypeScript Type |
-|--------|-------------|-----------------|
-| `column.text()` | TEXT | `string` |
-| `column.integer()` | INTEGER | `number` |
-| `column.real()` | REAL | `number` |
-| `column.boolean()` | INTEGER | `boolean` |
-| `column.blob()` | BLOB | `Uint8Array` |
-
-All columns support `.optional()` for nullable values.
 
 ### DatabaseProvider
 
-Wrap your app with `DatabaseProvider` to initialize the database:
-
 ```tsx
-import { DatabaseProvider } from 'syncable-sqlite/react';
-
 <DatabaseProvider
-  name="my-app"           // Unique database name
-  schema={schema}         // Your schema definition
-  mode="syncing"          // 'local' or 'syncing'
-  peerServer={{           // Required for syncing mode
-    host: 'localhost',
-    port: 9000,
-    path: '/',
-    secure: false,
-  }}
+  name="my-app"
+  schema={schema}
+  mode="syncing"
+  peerServer={{ host: 'localhost', port: 9000, path: '/', secure: false }}
+  discoveryInterval={5000}
 >
   <App />
 </DatabaseProvider>
 ```
 
-**Multiple databases:** Nest providers for multiple databases:
+Nest providers for multiple databases:
 
 ```tsx
 <DatabaseProvider name="app-db" schema={appSchema} mode="syncing" peerServer={config}>
@@ -692,219 +226,171 @@ import { DatabaseProvider } from 'syncable-sqlite/react';
 </DatabaseProvider>
 ```
 
-### useQuery Hook
+### useQuery
 
-Reactive queries with a builder pattern for simple table queries:
+Reactive queries with builder pattern. Auto-refetches on mutations.
 
 ```tsx
-import { useQuery } from 'syncable-sqlite/react';
-
-function MyComponent() {
-  const { data, isLoading, error, refetch } = useQuery('my-app', 'todos')
-    .where('completed', '=', false)      // WHERE clause
-    .where('priority', '>', 1)           // Multiple WHERE = AND
-    .orderBy('updated_at', 'desc')       // ORDER BY
-    .limit(10)                           // LIMIT
-    .exec();                             // Execute query
-
-  // data is typed as Todo[] | undefined
-  // Automatically re-fetches when data changes (local or remote)
-}
+const { data, isLoading, error, refetch } = useQuery('my-app', 'todos')
+  .where('completed', '=', false)
+  .where('priority', '>=', 1)
+  .orderBy('updated_at', 'desc')
+  .limit(10)
+  .exec();
 ```
 
-**Supported operators:** `=`, `!=`, `>`, `<`, `>=`, `<=`, `LIKE`, `IN`
+Operators: `=`, `!=`, `>`, `<`, `>=`, `<=`, `LIKE`, `IN`
 
-### useSQL Hook
+### useSQL
 
-For complex queries with JOINs, subqueries, GROUP BY, HAVING, and other advanced SQL features:
-
-```tsx
-import { useSQL } from 'syncable-sqlite/react';
-
-// Define the result type for your query
-interface ContentWithNotes {
-  id: string;
-  title: string;
-  note_count: number;
-  dictation: string | null;
-}
-
-function MyComponent() {
-  const { data, isLoading, error, refetch } = useSQL<ContentWithNotes>(
-    'my-app',
-    `SELECT 
-      content.id,
-      content.title,
-      (SELECT COUNT(*) FROM notes WHERE notes.content_id = content.id) as note_count,
-      (SELECT GROUP_CONCAT(dictation.value) FROM dictation WHERE dictation.content_id = content.id) as dictation
-    FROM content
-    WHERE content.deleted = 0
-    GROUP BY content.id
-    HAVING note_count > 0`,
-    {
-      params: [],                                    // Optional SQL parameters
-      tables: ['content', 'notes', 'dictation'],    // Tables for reactivity
-    }
-  );
-
-  // data is typed as ContentWithNotes[] | undefined
-}
-```
-
-**Features:**
-- Full SQL flexibility (JOINs, subqueries, GROUP BY, HAVING, etc.)
-- Parameterized queries with `params` option (re-runs when params change)
-- Table reactivity with `tables` option (auto-refetch when tables change)
-- Generic return type `useSQL<T>` for typed results
-
-**Options:**
-- `params` (optional): Array of SQL parameters for prepared statements
-- `tables` (optional): Array of table names this query depends on for reactivity
+Raw SQL for complex queries (JOINs, GROUP BY, subqueries).
 
 ```tsx
-// Simple query without reactivity
-const { data } = useSQL<{ count: number }>('my-db', 'SELECT COUNT(*) as count FROM users');
+interface Stats { category: string; count: number; }
 
-// Query with params (re-runs when userId changes)
-const { data } = useSQL<User>('my-db', 'SELECT * FROM users WHERE id = ?', {
+const { data, isLoading, error, refetch } = useSQL<Stats>(
+  'my-app',
+  `SELECT category, COUNT(*) as count 
+   FROM products 
+   WHERE deleted = 0 
+   GROUP BY category`,
+  { tables: ['products'] }  // for reactivity
+);
+
+// With parameters
+const { data } = useSQL<User>('my-app', 'SELECT * FROM users WHERE id = ?', {
   params: [userId],
   tables: ['users'],
 });
+```
 
-// Complex aggregation
-const { data } = useSQL<CategoryStats>('my-db', `
-  SELECT category, COUNT(*) as count, SUM(price) as total
-  FROM products
-  GROUP BY category
-  HAVING count >= 5
-  ORDER BY total DESC
-`, {
-  tables: ['products'],
+### useMutation
+
+```tsx
+const { insert, update, remove, isLoading, error } = useMutation('my-app', 'todos');
+
+const todo = await insert({ title: 'Test', completed: false });  // returns full row
+const updated = await update(todo.id, { completed: true });
+const removed = await remove(todo.id);  // soft delete
+```
+
+### useSyncStatus
+
+```tsx
+const { isConnected, peerCount, pendingOperations, peerId, mode } = useSyncStatus('my-app');
+```
+
+### usePeers
+
+```tsx
+const { peers, connectToPeer, disconnectFromPeer, pushQueue, clearQueue } = usePeers('my-app');
+```
+
+### useDatabase
+
+Direct access to the database instance.
+
+```tsx
+const db = useDatabase('my-app');
+const data = await db.export();
+```
+
+### useIsDatabaseReady
+
+```tsx
+const isReady = useIsDatabaseReady('my-app');
+if (!isReady) return <Loading />;
+```
+
+---
+
+## Automatic Schema
+
+Tables automatically receive these columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PRIMARY KEY | Auto-generated UUID |
+| `updated_at` | INTEGER | Unix timestamp (ms), auto-updated |
+| `deleted` | INTEGER | 0 = active, 1 = soft-deleted |
+
+SQL is automatically rewritten:
+- INSERT: Generates `id`, `updated_at`, sets `deleted=0`
+- UPDATE: Updates `updated_at`
+- DELETE: Converts to `UPDATE ... SET deleted=1`
+- SELECT: Adds `WHERE deleted = 0`
+
+---
+
+## Conflict Resolution
+
+Merge uses **last-write-wins**:
+1. Rows matched by `id`
+2. Higher `updated_at` timestamp wins
+3. Deleted rows excluded from results
+
+---
+
+## Vite Configuration
+
+```javascript
+import { defineConfig } from 'vite';
+import { syncableSqliteVitePlugin } from 'syncable-sqlite';
+
+export default defineConfig({
+  plugins: [syncableSqliteVitePlugin()],
+  server: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  optimizeDeps: {
+    exclude: ['syncable-sqlite'],
+  },
 });
 ```
 
-### useMutation Hook
+For production, copy WASM assets to dist:
 
-Insert, update, and remove with full type safety:
+```javascript
+import { copyFileSync, mkdirSync, existsSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-```tsx
-import { useMutation } from 'syncable-sqlite/react';
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function AddTodo() {
-  const { insert, update, remove, isLoading, error } = useMutation('my-app', 'todos');
-
-  // Insert returns the full row with generated id
-  const handleAdd = async () => {
-    const newTodo = await insert({ 
-      title: 'Buy groceries', 
-      completed: false 
-    });
-    console.log('Created:', newTodo.id);
-  };
-
-  // Update by id, returns updated row
-  const handleComplete = async (id: string) => {
-    const updated = await update(id, { completed: true });
-  };
-
-  // Remove (soft delete), returns removed row
-  const handleDelete = async (id: string) => {
-    const removed = await remove(id);
+function copySqliteAssetsPlugin() {
+  return {
+    name: 'copy-sqlite-assets',
+    writeBundle() {
+      const srcDir = resolve(__dirname, 'node_modules/syncable-sqlite/dist');
+      const destDir = resolve(__dirname, 'dist/assets');
+      mkdirSync(destDir, { recursive: true });
+      
+      ['sqlite3.wasm', 'sqlite3-opfs-async-proxy.js'].forEach(file => {
+        const src = resolve(srcDir, file);
+        if (existsSync(src)) copyFileSync(src, resolve(destDir, file));
+      });
+    },
   };
 }
 ```
 
-### useSyncStatus Hook
+---
 
-Monitor connection and sync status:
+## PeerJS Server
 
-```tsx
-import { useSyncStatus } from 'syncable-sqlite/react';
-
-function SyncIndicator() {
-  const { 
-    isConnected,        // boolean - any peers connected?
-    peerCount,          // number - count of connected peers
-    pendingOperations,  // number - queued offline operations
-    peerId,             // string | null - this database's peer ID
-    mode                // 'syncing' | 'local'
-  } = useSyncStatus('my-app');
-
-  return (
-    <div>
-      {isConnected ? `🟢 ${peerCount} peers` : '🔴 Offline'}
-      {pendingOperations > 0 && ` (${pendingOperations} pending)`}
-    </div>
-  );
-}
+```bash
+npm install --save-dev peer
+npx peerjs --port 9000 --allow_discovery
 ```
 
-### usePeers Hook
+---
 
-Manage peer connections:
+## Requirements
 
-```tsx
-import { usePeers } from 'syncable-sqlite/react';
-
-function PeerManager() {
-  const { 
-    peers,              // PeerInfo[] - list of connected peers
-    connectToPeer,      // (peerId: string) => Promise<void>
-    disconnectFromPeer, // (peerId: string) => Promise<void>
-    pushQueue,          // () => Promise<void> - push offline queue
-    clearQueue          // () => void - discard offline queue
-  } = usePeers('my-app');
-
-  return (
-    <div>
-      <h3>Connected Peers</h3>
-      <ul>
-        {peers.map(peer => (
-          <li key={peer.id}>
-            {peer.id} ({peer.status})
-            <button onClick={() => disconnectFromPeer(peer.id)}>
-              Disconnect
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-```
-
-### useDatabase Hook
-
-Direct access to the database instance:
-
-```tsx
-import { useDatabase } from 'syncable-sqlite/react';
-
-function ExportButton() {
-  const db = useDatabase('my-app');
-
-  const handleExport = async () => {
-    const data = await db.export();
-    // Save to file, send to server, etc.
-  };
-
-  return <button onClick={handleExport}>Export Database</button>;
-}
-```
-
-### Reactivity
-
-Queries automatically re-run when:
-- **Local mutations** - `insert`, `update`, `remove` invalidate related queries
-- **Remote sync** - Changes from peers trigger query refresh
-- **Manual refetch** - Call `refetch()` to manually refresh
-
-```tsx
-// This query automatically updates when:
-// 1. You call insert/update/remove on 'todos'
-// 2. A connected peer modifies 'todos'
-const { data, refetch } = useQuery('my-app', 'todos').exec();
-```
+- Modern browser with ES2022, Web Workers, OPFS, WebRTC support
 
 ## License
 
