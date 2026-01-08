@@ -33,6 +33,7 @@ export interface SyncOperation {
   id: string;           // Unique operation ID
   timestamp: number;    // For ordering
   sql: string;          // The processed SQL statement
+  params: unknown[];    // Parameters for the SQL statement
   table: string;        // Affected table
   rowId: string;        // Affected row ID
 }
@@ -302,19 +303,26 @@ export class SyncableDatabase {
       
       // If syncing mode, broadcast to peers
       if (this.mode === 'syncing') {
-        const processedSql = (await this.sendRequest('getLastProcessedSql', this.dbName, [])) as string;
+        // Get both processed SQL and params
+        const [processedSql, processedParams] = await Promise.all([
+          this.sendRequest('getLastProcessedSql', this.dbName, []),
+          this.sendRequest('getLastProcessedParams', this.dbName, []),
+        ]);
         
-        for (const affected of result.affectedRows) {
-          const operation: SyncOperation = {
-            id: crypto.randomUUID(),
-            timestamp: Date.now(),
-            sql: processedSql,
-            table: affected.table,
-            rowId: affected.id,
-          };
-          
-          this.broadcastOperation(operation);
-        }
+        // Get unique tables affected
+        const uniqueTables = [...new Set(result.affectedRows.map(r => r.table))];
+        
+        // Create ONE operation per mutation (not per row) to avoid redundant broadcasts
+        const operation: SyncOperation = {
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          sql: processedSql as string,
+          params: processedParams as unknown[],
+          table: uniqueTables[0],
+          rowId: result.affectedRows[0]?.id || '',
+        };
+        
+        this.broadcastOperation(operation);
       }
     }
     
@@ -346,8 +354,8 @@ export class SyncableDatabase {
     // Mark as applied
     this.appliedOperations.add(operation.id);
     
-    // Execute the SQL directly without reprocessing
-    await this.sendRequest('execRaw', this.dbName, [operation.sql]);
+    // Execute the SQL directly without reprocessing, passing params for binding
+    await this.sendRequest('execRaw', this.dbName, [operation.sql, operation.params || []]);
     
     // Emit callback
     this.emitSyncReceived(operation);
@@ -421,16 +429,40 @@ export class SyncableDatabase {
     const conn = this.peer.connect(peerId);
     
     await new Promise<void>((resolve, reject) => {
+      let connected = false;
+      
       conn.on('open', () => {
+        connected = true;
         const peerConn = new PeerConnection(peerId, conn, this);
         this.peers.set(peerId, peerConn);
         this.emitPeerConnected(peerId);
         resolve();
       });
-      conn.on('error', reject);
+      
+      // Handle connection close for outgoing connections
+      conn.on('close', () => {
+        if (this.peers.has(peerId)) {
+          this.peers.delete(peerId);
+          this.emitPeerDisconnected(peerId);
+        }
+      });
+      
+      conn.on('error', (err) => {
+        if (!connected) {
+          reject(err);
+        } else {
+          console.error('Connection error:', err);
+          this.peers.delete(peerId);
+          this.emitPeerDisconnected(peerId);
+        }
+      });
       
       // Add timeout
-      setTimeout(() => reject(new Error('Connection timeout')), 10000);
+      setTimeout(() => {
+        if (!connected) {
+          reject(new Error('Connection timeout'));
+        }
+      }, 10000);
     });
   }
 

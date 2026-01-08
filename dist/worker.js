@@ -11545,6 +11545,7 @@ var OPFS_VFS = "opfs";
 var sqlite3 = null;
 var databases = /* @__PURE__ */ new Map();
 var lastProcessedSql = /* @__PURE__ */ new Map();
+var lastProcessedParams = /* @__PURE__ */ new Map();
 var lastAffectedRows = /* @__PURE__ */ new Map();
 async function initSqlite() {
   console.log("[Worker] Initializing SQLite WASM module...");
@@ -11988,6 +11989,7 @@ async function handleRequest(request) {
           }
           console.log(`[SQL] ${loggedSql}`);
           lastProcessedSql.set(dbName, processed.sql);
+          lastProcessedParams.set(dbName, processed.params);
           if (processed.isMutation && processed.table) {
             let affectedIds = [];
             if (processed.rowId) {
@@ -12092,15 +12094,24 @@ async function handleRequest(request) {
         const db = databases.get(dbName);
         if (!db) throw new Error(`Database ${dbName} not found`);
         let sql = args[0];
+        const params = args[1];
         if (sql.toUpperCase().trim().startsWith("INSERT INTO")) {
           sql = sql.replace(/^INSERT\s+INTO/i, "INSERT OR REPLACE INTO");
         }
-        db.exec(sql);
+        if (params && params.length > 0) {
+          execute(db, sql, params);
+        } else {
+          db.exec(sql);
+        }
         result = { success: true };
         break;
       }
       case "getLastProcessedSql": {
         result = lastProcessedSql.get(dbName) || "";
+        break;
+      }
+      case "getLastProcessedParams": {
+        result = lastProcessedParams.get(dbName) || [];
         break;
       }
       default:

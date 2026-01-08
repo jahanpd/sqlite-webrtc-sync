@@ -27,6 +27,7 @@ export interface SyncOperation {
     id: string;
     timestamp: number;
     sql: string;
+    params: unknown[];
     table: string;
     rowId: string;
 }

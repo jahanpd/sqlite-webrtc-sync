@@ -11587,6 +11587,7 @@ var OPFS_VFS = "opfs";
 var sqlite3 = null;
 var databases = /* @__PURE__ */ new Map();
 var lastProcessedSql = /* @__PURE__ */ new Map();
+var lastProcessedParams = /* @__PURE__ */ new Map();
 var lastAffectedRows = /* @__PURE__ */ new Map();
 async function initSqlite() {
   console.log("[Worker] Initializing SQLite WASM module...");
@@ -12030,6 +12031,7 @@ async function handleRequest(request) {
           }
           console.log(\`[SQL] \${loggedSql}\`);
           lastProcessedSql.set(dbName, processed.sql);
+          lastProcessedParams.set(dbName, processed.params);
           if (processed.isMutation && processed.table) {
             let affectedIds = [];
             if (processed.rowId) {
@@ -12134,15 +12136,24 @@ async function handleRequest(request) {
         const db = databases.get(dbName);
         if (!db) throw new Error(\`Database \${dbName} not found\`);
         let sql = args[0];
+        const params = args[1];
         if (sql.toUpperCase().trim().startsWith("INSERT INTO")) {
           sql = sql.replace(/^INSERT\\s+INTO/i, "INSERT OR REPLACE INTO");
         }
-        db.exec(sql);
+        if (params && params.length > 0) {
+          execute(db, sql, params);
+        } else {
+          db.exec(sql);
+        }
         result = { success: true };
         break;
       }
       case "getLastProcessedSql": {
         result = lastProcessedSql.get(dbName) || "";
+        break;
+      }
+      case "getLastProcessedParams": {
+        result = lastProcessedParams.get(dbName) || [];
         break;
       }
       default:
@@ -18941,17 +18952,20 @@ var SyncableDatabase = class _SyncableDatabase {
       const affectedTables = [...new Set(result.affectedRows.map((r) => r.table))];
       this.emitMutation(affectedTables);
       if (this.mode === "syncing") {
-        const processedSql = await this.sendRequest("getLastProcessedSql", this.dbName, []);
-        for (const affected of result.affectedRows) {
-          const operation = {
-            id: crypto.randomUUID(),
-            timestamp: Date.now(),
-            sql: processedSql,
-            table: affected.table,
-            rowId: affected.id
-          };
-          this.broadcastOperation(operation);
-        }
+        const [processedSql, processedParams] = await Promise.all([
+          this.sendRequest("getLastProcessedSql", this.dbName, []),
+          this.sendRequest("getLastProcessedParams", this.dbName, [])
+        ]);
+        const uniqueTables = [...new Set(result.affectedRows.map((r) => r.table))];
+        const operation = {
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          sql: processedSql,
+          params: processedParams,
+          table: uniqueTables[0],
+          rowId: result.affectedRows[0]?.id || ""
+        };
+        this.broadcastOperation(operation);
       }
     }
     return result;
@@ -18971,7 +18985,7 @@ var SyncableDatabase = class _SyncableDatabase {
       return;
     }
     this.appliedOperations.add(operation.id);
-    await this.sendRequest("execRaw", this.dbName, [operation.sql]);
+    await this.sendRequest("execRaw", this.dbName, [operation.sql, operation.params || []]);
     this.emitSyncReceived(operation);
   }
   async export() {
@@ -19030,14 +19044,34 @@ var SyncableDatabase = class _SyncableDatabase {
     }
     const conn = this.peer.connect(peerId);
     await new Promise((resolve, reject) => {
+      let connected = false;
       conn.on("open", () => {
+        connected = true;
         const peerConn = new PeerConnection(peerId, conn, this);
         this.peers.set(peerId, peerConn);
         this.emitPeerConnected(peerId);
         resolve();
       });
-      conn.on("error", reject);
-      setTimeout(() => reject(new Error("Connection timeout")), 1e4);
+      conn.on("close", () => {
+        if (this.peers.has(peerId)) {
+          this.peers.delete(peerId);
+          this.emitPeerDisconnected(peerId);
+        }
+      });
+      conn.on("error", (err) => {
+        if (!connected) {
+          reject(err);
+        } else {
+          console.error("Connection error:", err);
+          this.peers.delete(peerId);
+          this.emitPeerDisconnected(peerId);
+        }
+      });
+      setTimeout(() => {
+        if (!connected) {
+          reject(new Error("Connection timeout"));
+        }
+      }, 1e4);
     });
   }
   async disconnectFromPeer(peerId) {

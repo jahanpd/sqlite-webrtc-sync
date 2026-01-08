@@ -9,8 +9,9 @@ const OPFS_VFS = 'opfs';
 let sqlite3: any = null;
 const databases = new Map<string, any>();
 
-// Track last processed SQL and affected rows for sync
+// Track last processed SQL, params, and affected rows for sync
 const lastProcessedSql = new Map<string, string>();
+const lastProcessedParams = new Map<string, unknown[]>();
 const lastAffectedRows = new Map<string, { id: string; table: string }[]>();
 
 type SQLiteRequest = {
@@ -633,6 +634,7 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
           }
           console.log(`[SQL] ${loggedSql}`);
           lastProcessedSql.set(dbName, processed.sql);
+          lastProcessedParams.set(dbName, processed.params);
           
           if (processed.isMutation && processed.table) {
             // For UPDATE/DELETE, we need to find affected row IDs before executing
@@ -761,17 +763,30 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
         const db = databases.get(dbName);
         if (!db) throw new Error(`Database ${dbName} not found`);
         let sql = args[0] as string;
+        const params = args[1] as unknown[] | undefined;
+        
         // For INSERT statements, use INSERT OR REPLACE to handle conflicts
         if (sql.toUpperCase().trim().startsWith('INSERT INTO')) {
           sql = sql.replace(/^INSERT\s+INTO/i, 'INSERT OR REPLACE INTO');
         }
-        db.exec(sql);
+        
+        // Execute with params if provided, otherwise execute directly
+        if (params && params.length > 0) {
+          execute(db, sql, params);
+        } else {
+          db.exec(sql);
+        }
         result = { success: true };
         break;
       }
       
       case 'getLastProcessedSql': {
         result = lastProcessedSql.get(dbName) || '';
+        break;
+      }
+      
+      case 'getLastProcessedParams': {
+        result = lastProcessedParams.get(dbName) || [];
         break;
       }
       
