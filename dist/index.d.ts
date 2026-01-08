@@ -35,6 +35,7 @@ type PeerConnectedCallback = (peerId: string) => void;
 type PeerDisconnectedCallback = (peerId: string) => void;
 type SyncReceivedCallback = (operation: SyncOperation) => void;
 type MutationCallback = (tables: string[]) => void;
+type DataChangedCallback = () => void;
 export declare class SyncableDatabase {
     private dbName;
     private mode;
@@ -54,6 +55,7 @@ export declare class SyncableDatabase {
     private onPeerDisconnectedCallbacks;
     private onSyncReceivedCallbacks;
     private onMutationCallbacks;
+    private onDataChangedCallbacks;
     private constructor();
     static create(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase>;
     private init;
@@ -98,10 +100,16 @@ export declare class SyncableDatabase {
      * This is used by React hooks to trigger re-renders.
      */
     onMutation(callback: MutationCallback): void;
+    /**
+     * Register a callback that fires when data changes from bulk operations (merge, import).
+     * This is used by React hooks to trigger re-renders when peer sync completes.
+     */
+    onDataChanged(callback: DataChangedCallback): void;
     private emitPeerConnected;
     private emitPeerDisconnected;
     private emitSyncReceived;
     private emitMutation;
+    private emitDataChanged;
     close(): Promise<void>;
 }
 export declare function createDatabase(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase>;

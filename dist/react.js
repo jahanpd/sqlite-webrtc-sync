@@ -18790,6 +18790,7 @@ var SyncableDatabase = class _SyncableDatabase {
   onPeerDisconnectedCallbacks = [];
   onSyncReceivedCallbacks = [];
   onMutationCallbacks = [];
+  onDataChangedCallbacks = [];
   constructor(dbName, mode, peerServerConfig, discoveryInterval) {
     this.dbName = dbName;
     this.mode = mode;
@@ -18953,22 +18954,24 @@ var SyncableDatabase = class _SyncableDatabase {
     const result = await this.sendRequest("exec", this.dbName, [sql, params]);
     if (result.affectedRows && result.affectedRows.length > 0) {
       const affectedTables = [...new Set(result.affectedRows.map((r) => r.table))];
-      this.emitMutation(affectedTables);
+      let syncOperation = null;
       if (this.mode === "syncing") {
         const [processedSql, processedParams] = await Promise.all([
           this.sendRequest("getLastProcessedSql", this.dbName, []),
           this.sendRequest("getLastProcessedParams", this.dbName, [])
         ]);
-        const uniqueTables = [...new Set(result.affectedRows.map((r) => r.table))];
-        const operation = {
+        syncOperation = {
           id: crypto.randomUUID(),
           timestamp: Date.now(),
           sql: processedSql,
           params: processedParams,
-          table: uniqueTables[0],
+          table: affectedTables[0],
           rowId: result.affectedRows[0]?.id || ""
         };
-        this.broadcastOperation(operation);
+      }
+      this.emitMutation(affectedTables);
+      if (syncOperation) {
+        this.broadcastOperation(syncOperation);
       }
     }
     return result;
@@ -19025,12 +19028,14 @@ var SyncableDatabase = class _SyncableDatabase {
       throw new Error("Database not initialized");
     }
     await this.sendRequest("import", this.dbName, [Array.from(data)]);
+    this.emitDataChanged();
   }
   async importBinary(data) {
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
     await this.sendRequest("importBinary", this.dbName, [Array.from(data)]);
+    this.emitDataChanged();
   }
   async connectToPeer(peerId) {
     if (this.mode !== "syncing") {
@@ -19162,12 +19167,14 @@ var SyncableDatabase = class _SyncableDatabase {
       throw new Error("Database not initialized");
     }
     await this.sendRequest("merge", this.dbName, [Array.from(remoteData)]);
+    this.emitDataChanged();
   }
   async mergeBinary(binaryData) {
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
     await this.sendRequest("mergeBinary", this.dbName, [Array.from(binaryData)]);
+    this.emitDataChanged();
   }
   getPeerId() {
     return this.peerId;
@@ -19216,6 +19223,13 @@ var SyncableDatabase = class _SyncableDatabase {
   onMutation(callback) {
     this.onMutationCallbacks.push(callback);
   }
+  /**
+   * Register a callback that fires when data changes from bulk operations (merge, import).
+   * This is used by React hooks to trigger re-renders when peer sync completes.
+   */
+  onDataChanged(callback) {
+    this.onDataChangedCallbacks.push(callback);
+  }
   // Event emitters
   emitPeerConnected(peerId) {
     for (const cb of this.onPeerConnectedCallbacks) {
@@ -19248,6 +19262,15 @@ var SyncableDatabase = class _SyncableDatabase {
     for (const cb of this.onMutationCallbacks) {
       try {
         cb(tables);
+      } catch (e) {
+        console.error("Callback error:", e);
+      }
+    }
+  }
+  emitDataChanged() {
+    for (const cb of this.onDataChangedCallbacks) {
+      try {
+        cb();
       } catch (e) {
         console.error("Callback error:", e);
       }
@@ -19556,6 +19579,9 @@ function DatabaseProvider({
             storeRef.current.invalidateTables([operation.table]);
           });
         }
+        db.onDataChanged(() => {
+          storeRef.current.invalidateAll();
+        });
         if (!mounted) {
           await db.close();
           return;

@@ -43,6 +43,7 @@ type PeerConnectedCallback = (peerId: string) => void;
 type PeerDisconnectedCallback = (peerId: string) => void;
 type SyncReceivedCallback = (operation: SyncOperation) => void;
 type MutationCallback = (tables: string[]) => void;
+type DataChangedCallback = () => void;
 
 interface WorkerMessage {
   id: number;
@@ -75,6 +76,7 @@ export class SyncableDatabase {
   private onPeerDisconnectedCallbacks: PeerDisconnectedCallback[] = [];
   private onSyncReceivedCallbacks: SyncReceivedCallback[] = [];
   private onMutationCallbacks: MutationCallback[] = [];
+  private onDataChangedCallbacks: DataChangedCallback[] = [];
 
   private constructor(dbName: string, mode: DatabaseMode, peerServerConfig?: PeerServerConfig, discoveryInterval?: number) {
     this.dbName = dbName;
@@ -298,31 +300,31 @@ export class SyncableDatabase {
       // Collect unique affected tables
       const affectedTables = [...new Set(result.affectedRows.map(r => r.table))];
       
-      // Emit mutation event for reactivity (useSQL re-renders)
-      this.emitMutation(affectedTables);
-      
-      // If syncing mode, broadcast to peers
+      // If syncing mode, get the processed SQL/params BEFORE emitting mutation
+      // (emitMutation can trigger React re-renders which may overwrite lastProcessedSql)
+      let syncOperation: SyncOperation | null = null;
       if (this.mode === 'syncing') {
-        // Get both processed SQL and params
         const [processedSql, processedParams] = await Promise.all([
           this.sendRequest('getLastProcessedSql', this.dbName, []),
           this.sendRequest('getLastProcessedParams', this.dbName, []),
         ]);
         
-        // Get unique tables affected
-        const uniqueTables = [...new Set(result.affectedRows.map(r => r.table))];
-        
-        // Create ONE operation per mutation (not per row) to avoid redundant broadcasts
-        const operation: SyncOperation = {
+        syncOperation = {
           id: crypto.randomUUID(),
           timestamp: Date.now(),
           sql: processedSql as string,
           params: processedParams as unknown[],
-          table: uniqueTables[0],
+          table: affectedTables[0],
           rowId: result.affectedRows[0]?.id || '',
         };
-        
-        this.broadcastOperation(operation);
+      }
+      
+      // Emit mutation event for reactivity (useSQL re-renders)
+      this.emitMutation(affectedTables);
+      
+      // Broadcast to peers after emitting mutation
+      if (syncOperation) {
+        this.broadcastOperation(syncOperation);
       }
     }
     
@@ -398,6 +400,7 @@ export class SyncableDatabase {
       throw new Error('Database not initialized');
     }
     await this.sendRequest('import', this.dbName, [Array.from(data)]);
+    this.emitDataChanged();
   }
 
   async importBinary(data: Uint8Array): Promise<void> {
@@ -405,6 +408,7 @@ export class SyncableDatabase {
       throw new Error('Database not initialized');
     }
     await this.sendRequest('importBinary', this.dbName, [Array.from(data)]);
+    this.emitDataChanged();
   }
 
   async connectToPeer(peerId: string): Promise<void> {
@@ -562,6 +566,7 @@ export class SyncableDatabase {
       throw new Error('Database not initialized');
     }
     await this.sendRequest('merge', this.dbName, [Array.from(remoteData)]);
+    this.emitDataChanged();
   }
 
   async mergeBinary(binaryData: Uint8Array): Promise<void> {
@@ -569,6 +574,7 @@ export class SyncableDatabase {
       throw new Error('Database not initialized');
     }
     await this.sendRequest('mergeBinary', this.dbName, [Array.from(binaryData)]);
+    this.emitDataChanged();
   }
 
   getPeerId(): string | null {
@@ -632,6 +638,14 @@ export class SyncableDatabase {
     this.onMutationCallbacks.push(callback);
   }
   
+  /**
+   * Register a callback that fires when data changes from bulk operations (merge, import).
+   * This is used by React hooks to trigger re-renders when peer sync completes.
+   */
+  onDataChanged(callback: DataChangedCallback): void {
+    this.onDataChangedCallbacks.push(callback);
+  }
+  
   // Event emitters
   private emitPeerConnected(peerId: string): void {
     for (const cb of this.onPeerConnectedCallbacks) {
@@ -654,6 +668,12 @@ export class SyncableDatabase {
   private emitMutation(tables: string[]): void {
     for (const cb of this.onMutationCallbacks) {
       try { cb(tables); } catch (e) { console.error('Callback error:', e); }
+    }
+  }
+  
+  private emitDataChanged(): void {
+    for (const cb of this.onDataChangedCallbacks) {
+      try { cb(); } catch (e) { console.error('Callback error:', e); }
     }
   }
 

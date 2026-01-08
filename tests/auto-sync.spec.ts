@@ -838,4 +838,123 @@ test.describe('Auto-Discovery and Real-time Sync', () => {
       await contextC.close();
     }
   });
+
+  test('Test 13: React components re-render on live sync from peer', async ({ browser }) => {
+    // Helper to create a React peer page
+    async function createReactPeerPage(context: BrowserContext): Promise<Page> {
+      const page = await context.newPage();
+      
+      page.on('console', (msg: { type: () => string; text: () => string }) => {
+        const text = msg.text();
+        if (msg.type() === 'error' && !text.includes('404') && !text.includes('Failed to load')) {
+          console.log(`[React Page Error] ${text}`);
+        }
+      });
+      
+      page.on('pageerror', (error: Error) => {
+        console.log(`[React Page Error] ${error.message}`);
+      });
+      
+      await page.goto('/react-peer-sync-test.html');
+      await page.waitForFunction(() => (window as any).pageReady === true, { timeout: 10000 });
+      
+      return page;
+    }
+    
+    const contextA = await browser.newContext();
+    const contextB = await browser.newContext();
+    const pageA = await createReactPeerPage(contextA);
+    const pageB = await createReactPeerPage(contextB);
+    
+    try {
+      const sharedDbName = uniqueDbName('react-sync');
+      
+      // === PHASE 1: Create databases with React on both sides ===
+      await pageA.evaluate(async (name) => {
+        await (window as any).createDb(name);
+      }, sharedDbName);
+      
+      await pageB.evaluate(async (name) => {
+        await (window as any).createDb(name);
+      }, sharedDbName);
+      
+      // === PHASE 2: Wait for auto-discovery ===
+      await new Promise(resolve => setTimeout(resolve, 8000));
+      
+      // Verify connected
+      const isConnectedA = await pageA.evaluate(() => (window as any).isConnected());
+      const isConnectedB = await pageB.evaluate(() => (window as any).isConnected());
+      expect(isConnectedA).toBe(true);
+      expect(isConnectedB).toBe(true);
+      
+      // === PHASE 3: Verify B's React shows 0 items initially ===
+      const countBefore = await pageB.evaluate(() => (window as any).getItemCount());
+      expect(countBefore).toBe(0);
+      
+      // === PHASE 4: Insert on A ===
+      await pageA.evaluate(async () => {
+        await (window as any).insertItem('test-item-1', 42);
+      });
+      
+      // Small delay for sync to propagate
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Verify A has the data
+      const directDataA = await pageA.evaluate(async () => {
+        const result = await (window as any).dbInstance.exec('SELECT * FROM items');
+        return result.rows;
+      });
+      expect(directDataA.length).toBe(1);
+      
+      // Verify B received the data directly (bypassing React)
+      const directDataB = await pageB.evaluate(async () => {
+        const result = await (window as any).dbInstance.exec('SELECT * FROM items');
+        return result.rows;
+      });
+      expect(directDataB.length).toBe(1);
+      
+      // === PHASE 5: Wait for B's React to update via live sync ===
+      // The sync-operation should trigger onSyncReceived -> invalidateTables -> re-render
+      await pageB.evaluate(async () => {
+        await (window as any).waitForItemCount(1, 10000);
+      });
+      
+      // Verify B shows 1 item
+      const countAfterFirst = await pageB.evaluate(() => (window as any).getItemCount());
+      expect(countAfterFirst).toBe(1);
+      
+      // === PHASE 6: Insert another item on A ===
+      await pageA.evaluate(async () => {
+        await (window as any).insertItem('test-item-2', 99);
+      });
+      
+      // Wait for B to update
+      await pageB.evaluate(async () => {
+        await (window as any).waitForItemCount(2, 10000);
+      });
+      
+      const countAfterSecond = await pageB.evaluate(() => (window as any).getItemCount());
+      expect(countAfterSecond).toBe(2);
+      
+      // === PHASE 7: Insert on B, verify A updates ===
+      await pageB.evaluate(async () => {
+        await (window as any).insertItem('from-b', 123);
+      });
+      
+      // Wait for A to update
+      await pageA.evaluate(async () => {
+        await (window as any).waitForItemCount(3, 10000);
+      });
+      
+      const countOnA = await pageA.evaluate(() => (window as any).getItemCount());
+      expect(countOnA).toBe(3);
+      
+      // Cleanup
+      await pageA.evaluate(() => (window as any).closeDb());
+      await pageB.evaluate(() => (window as any).closeDb());
+    } finally {
+      await contextA.close();
+      await contextB.close();
+    }
+  });
 });

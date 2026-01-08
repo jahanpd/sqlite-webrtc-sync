@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>React Peer Sync Reactivity Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .log { color: #666; margin: 2px 0; }
+    .item { padding: 4px; margin: 2px 0; background: #f0f0f0; }
+    #item-list { min-height: 50px; border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18",
+      "react-dom": "https://esm.sh/react-dom@18",
+      "react-dom/client": "https://esm.sh/react-dom@18/client",
+      "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime"
+    }
+  }
+  </script>
+</head>
+<body>
+  <h1>React Peer Sync Reactivity Test</h1>
+  <div id="status">Initializing...</div>
+  <div id="root"></div>
+  <div id="log"></div>
+  
+  <script type="module">
+    import React, { useState, useEffect, useRef } from 'react';
+    import ReactDOM from 'react-dom/client';
+    import { defineSchema, defineTable, column } from './schema.js';
+    import { DatabaseProvider, useSQL, useDatabase, useIsDatabaseReady } from './react.js';
+
+    // Default peer server config
+    const DEFAULT_PEER_SERVER = {
+      host: 'localhost',
+      port: 9000,
+      path: '/',
+      secure: false
+    };
+
+    function log(msg) {
+      const div = document.createElement('div');
+      div.className = 'log';
+      div.textContent = new Date().toISOString().split('T')[1] + ' ' + msg;
+      document.getElementById('log').appendChild(div);
+      console.log(msg);
+    }
+
+    // Schema for test
+    const schema = defineSchema({
+      items: defineTable({
+        name: column.text(),
+        value: column.integer(),
+      }),
+    });
+
+    // Component that displays items using useSQL
+    function ItemList({ onCountChange }) {
+      const { data: items, isLoading, error } = useSQL(
+        window.currentDbName,
+        'SELECT * FROM items ORDER BY name',
+        { tables: ['items'] }
+      );
+
+      useEffect(() => {
+        if (!isLoading && items) {
+          log(`ItemList rendered: ${items.length} items`);
+          onCountChange(items.length);
+        }
+      }, [items, isLoading, onCountChange]);
+
+      if (error) {
+        return React.createElement('div', { style: { color: 'red' } }, `Error: ${error.message}`);
+      }
+
+      if (isLoading) {
+        return React.createElement('div', null, 'Loading...');
+      }
+
+      return React.createElement('div', { id: 'item-list' },
+        React.createElement('div', null, `Total items: ${items?.length ?? 0}`),
+        items?.map(item => 
+          React.createElement('div', { key: item.id, className: 'item' },
+            `${item.name}: ${item.value}`
+          )
+        )
+      );
+    }
+
+    // Main app component
+    function App({ dbName, onReady }) {
+      const isReady = useIsDatabaseReady(dbName);
+      const db = useDatabase(dbName);
+      const [itemCount, setItemCount] = useState(0);
+      const readyReported = useRef(false);
+
+      useEffect(() => {
+        if (isReady && db && !readyReported.current) {
+          readyReported.current = true;
+          log('Database and React ready');
+          onReady(db);
+        }
+      }, [isReady, db, onReady]);
+
+      // Expose item count to window for testing
+      useEffect(() => {
+        window.currentItemCount = itemCount;
+      }, [itemCount]);
+
+      if (!isReady) {
+        return React.createElement('div', null, 'Initializing database...');
+      }
+
+      return React.createElement('div', null,
+        React.createElement('h3', null, `Database: ${dbName}`),
+        React.createElement('div', { id: 'item-count' }, `React item count: ${itemCount}`),
+        React.createElement(ItemList, { onCountChange: setItemCount })
+      );
+    }
+
+    // Root component that wraps with DatabaseProvider
+    function Root({ dbName, peerServer }) {
+      const [db, setDb] = useState(null);
+
+      const handleReady = (database) => {
+        setDb(database);
+        window.dbInstance = database;
+        window.dbReady = true;
+        document.getElementById('status').textContent = `Connected as: ${database.getPeerId() || 'local'}`;
+      };
+
+      return React.createElement(
+        DatabaseProvider,
+        { 
+          name: dbName, 
+          schema: schema, 
+          mode: 'syncing',
+          peerServer: peerServer
+        },
+        React.createElement(App, { dbName: dbName, onReady: handleReady })
+      );
+    }
+
+    // Global state
+    window.currentDbName = null;
+    window.currentItemCount = 0;
+    window.dbInstance = null;
+    window.dbReady = false;
+    window.reactRoot = null;
+
+    // Create database with React
+    window.createDb = async function(name, peerServerConfig) {
+      log(`Creating database: ${name}`);
+      window.currentDbName = name;
+      window.dbReady = false;
+      
+      const config = peerServerConfig || DEFAULT_PEER_SERVER;
+      
+      // Mount React app
+      const container = document.getElementById('root');
+      if (window.reactRoot) {
+        window.reactRoot.unmount();
+      }
+      window.reactRoot = ReactDOM.createRoot(container);
+      window.reactRoot.render(React.createElement(Root, { dbName: name, peerServer: config }));
+      
+      // Wait for database to be ready
+      await new Promise((resolve) => {
+        const check = () => {
+          if (window.dbReady) {
+            resolve();
+          } else {
+            setTimeout(check, 100);
+          }
+        };
+        check();
+      });
+      
+      log(`Database ${name} ready`);
+      return { success: true, peerId: window.dbInstance?.getPeerId() };
+    };
+
+    // Insert an item
+    window.insertItem = async function(name, value) {
+      if (!window.dbInstance) throw new Error('Database not ready');
+      log(`Inserting item: ${name} = ${value}`);
+      const result = await window.dbInstance.exec(
+        'INSERT INTO items (name, value) VALUES (?, ?)',
+        [name, value]
+      );
+      log(`Inserted item: ${name}, affectedRows: ${JSON.stringify(result.affectedRows)}`);
+      log(`Connected peers: ${JSON.stringify(window.dbInstance.getConnectedPeers())}`);
+      return { success: true };
+    };
+
+    // Get current item count from React state
+    window.getItemCount = function() {
+      return window.currentItemCount;
+    };
+
+    // Wait for item count to reach a specific value
+    window.waitForItemCount = async function(targetCount, timeout = 10000) {
+      log(`Waiting for item count to reach ${targetCount}...`);
+      const startTime = Date.now();
+      
+      return new Promise((resolve, reject) => {
+        const check = () => {
+          const currentCount = window.currentItemCount;
+          if (currentCount >= targetCount) {
+            log(`Item count reached ${currentCount}`);
+            resolve(currentCount);
+          } else if (Date.now() - startTime > timeout) {
+            reject(new Error(`Timeout waiting for item count. Current: ${currentCount}, Target: ${targetCount}`));
+          } else {
+            setTimeout(check, 100);
+          }
+        };
+        check();
+      });
+    };
+
+    // Get peer ID
+    window.getPeerId = function() {
+      return window.dbInstance?.getPeerId() || null;
+    };
+
+    // Check if connected to peers
+    window.isConnected = function() {
+      return window.dbInstance?.isConnected() || false;
+    };
+
+    // Get connected peers
+    window.getConnectedPeers = function() {
+      return window.dbInstance?.getConnectedPeers() || [];
+    };
+
+    // Close database
+    window.closeDb = async function() {
+      if (window.dbInstance) {
+        await window.dbInstance.close();
+        window.dbInstance = null;
+      }
+      if (window.reactRoot) {
+        window.reactRoot.unmount();
+        window.reactRoot = null;
+      }
+      window.dbReady = false;
+      window.currentDbName = null;
+      window.currentItemCount = 0;
+      log('Database closed');
+      return { success: true };
+    };
+
+    // Signal that the page is ready
+    window.pageReady = true;
+    log('React peer sync test harness ready');
+  </script>
+</body>
+</html>

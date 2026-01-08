@@ -80,6 +80,11 @@ export function DatabaseProvider<S extends SchemaDef>({
           });
         }
 
+        // Register data changed listener to invalidate all queries (for merge/import)
+        db.onDataChanged(() => {
+          storeRef.current.invalidateAll();
+        });
+
         if (!mounted) {
           await db.close();
           return;
