@@ -19115,6 +19115,48 @@ var SyncableDatabase = class _SyncableDatabase {
     );
     await Promise.all(promises);
   }
+  async mergeFromPeer(peerId) {
+    const peerConnection = this.peers.get(peerId);
+    if (!peerConnection) {
+      throw new Error(`Peer ${peerId} not connected`);
+    }
+    await peerConnection.requestMerge();
+  }
+  async mergeToPeer(peerId) {
+    const peerConnection = this.peers.get(peerId);
+    if (!peerConnection) {
+      throw new Error(`Peer ${peerId} not connected`);
+    }
+    await peerConnection.pushMerge();
+  }
+  async mergeFromAllPeers() {
+    const promises = Array.from(this.peers.keys()).map(
+      (peerId) => this.mergeFromPeer(peerId).catch(
+        (err) => console.error(`Failed to merge from ${peerId}:`, err)
+      )
+    );
+    await Promise.all(promises);
+  }
+  async mergeToAllPeers() {
+    const promises = Array.from(this.peers.keys()).map(
+      (peerId) => this.mergeToPeer(peerId).catch(
+        (err) => console.error(`Failed to merge to ${peerId}:`, err)
+      )
+    );
+    await Promise.all(promises);
+  }
+  async syncWithPeer(peerId) {
+    await this.mergeFromPeer(peerId);
+    await this.mergeToPeer(peerId);
+  }
+  async syncWithAllPeers() {
+    const promises = Array.from(this.peers.keys()).map(
+      (peerId) => this.syncWithPeer(peerId).catch(
+        (err) => console.error(`Failed to sync with ${peerId}:`, err)
+      )
+    );
+    await Promise.all(promises);
+  }
   async merge(remoteData) {
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
@@ -19236,6 +19278,7 @@ var PeerConnection = class {
   db;
   pendingExport = null;
   pendingImport = null;
+  pendingMerge = null;
   constructor(peerId, connection, db) {
     this.peerId = peerId;
     this.connection = connection;
@@ -19254,15 +19297,26 @@ var PeerConnection = class {
         this.connection.send({ type: "exportData", data: Array.from(exportData) });
       } else if (msg.type === "importData" && msg.data) {
         await this.db.import(new Uint8Array(msg.data));
+      } else if (msg.type === "mergeRequest") {
+        const exportData = await this.db.export();
+        this.connection.send({ type: "mergeData", data: Array.from(exportData) });
+      } else if (msg.type === "mergeData" && msg.data) {
+        await this.db.merge(new Uint8Array(msg.data));
+        this.pendingMerge?.resolve();
+        this.pendingMerge = null;
+      } else if (msg.type === "pushMergeData" && msg.data) {
+        await this.db.merge(new Uint8Array(msg.data));
       }
     });
     this.connection.on("close", () => {
       this.pendingExport?.reject(new Error("Connection closed"));
       this.pendingImport?.reject(new Error("Connection closed"));
+      this.pendingMerge?.reject(new Error("Connection closed"));
     });
     this.connection.on("error", (err) => {
       this.pendingExport?.reject(err);
       this.pendingImport?.reject(err);
+      this.pendingMerge?.reject(err);
     });
   }
   sendOperation(operation) {
@@ -19291,6 +19345,31 @@ var PeerConnection = class {
     }
     const exportData = await this.db.export();
     this.connection.send({ type: "importData", data: Array.from(exportData) });
+    return new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+  }
+  async requestMerge() {
+    if (!this.connection.open) {
+      throw new Error(`Peer ${this.peerId} not connected`);
+    }
+    this.connection.send({ type: "mergeRequest" });
+    return new Promise((resolve, reject) => {
+      this.pendingMerge = { resolve, reject };
+      setTimeout(() => {
+        if (this.pendingMerge) {
+          this.pendingMerge.reject(new Error("Merge request timed out"));
+          this.pendingMerge = null;
+        }
+      }, 3e4);
+    });
+  }
+  async pushMerge() {
+    if (!this.connection.open) {
+      throw new Error(`Peer ${this.peerId} not connected`);
+    }
+    const exportData = await this.db.export();
+    this.connection.send({ type: "pushMergeData", data: Array.from(exportData) });
     return new Promise((resolve) => {
       setTimeout(resolve, 100);
     });

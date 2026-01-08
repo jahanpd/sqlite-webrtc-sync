@@ -18,13 +18,26 @@ export default defineConfig({
   },
   projects: [
     // Default tests using the static server (port 3001)
+    // Uses headed mode for WebRTC peer tests to work reliably
     {
       name: 'chromium',
       use: { 
         browserName: 'chromium',
         baseURL: 'http://localhost:3001',
+        // WebRTC tests require headed mode for reliable ICE candidate gathering
+        headless: false,
       },
-      testIgnore: ['**/vite.spec.ts'],
+      testMatch: ['**/peer-sync.spec.ts', '**/auto-sync.spec.ts'],
+    },
+    // Other tests can run headless
+    {
+      name: 'chromium-headless',
+      use: { 
+        browserName: 'chromium',
+        baseURL: 'http://localhost:3001',
+        headless: true,
+      },
+      testIgnore: ['**/vite.spec.ts', '**/peer-sync.spec.ts', '**/auto-sync.spec.ts'],
     },
     // Vite dev server tests (port 3002)
     {

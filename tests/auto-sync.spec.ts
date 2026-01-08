@@ -524,4 +524,318 @@ test.describe('Auto-Discovery and Real-time Sync', () => {
       await context.close();
     }
   });
+
+  test('Test 10: Full sync lifecycle - connect, sync, disconnect, queue, reconnect, verify', async ({ browser }) => {
+    // Use two separate browser contexts to simulate different browsers/devices
+    const contextA = await browser.newContext();
+    const contextB = await browser.newContext();
+    const pageA = await createPeerPageInContext(contextA);
+    const pageB = await createPeerPageInContext(contextB);
+    
+    try {
+      const sharedDbName = uniqueDbName('full-lifecycle');
+      
+      // === PHASE 1: Create databases with same name ===
+      await pageA.evaluate(async (name) => {
+        await (window as any).createSyncingDb(name);
+        (window as any).registerSyncCallback(name);
+        await (window as any).execSql(name, 'CREATE TABLE IF NOT EXISTS items (name TEXT, value INTEGER)');
+      }, sharedDbName);
+      
+      await pageB.evaluate(async (name) => {
+        await (window as any).createSyncingDb(name);
+        (window as any).registerSyncCallback(name);
+        await (window as any).execSql(name, 'CREATE TABLE IF NOT EXISTS items (name TEXT, value INTEGER)');
+      }, sharedDbName);
+      
+      // === PHASE 2: Wait for auto-discovery and verify connection ===
+      await new Promise(resolve => setTimeout(resolve, 8000));
+      
+      const isConnectedA = await pageA.evaluate((name) => (window as any).isConnected(name), sharedDbName);
+      const isConnectedB = await pageB.evaluate((name) => (window as any).isConnected(name), sharedDbName);
+      expect(isConnectedA).toBe(true);
+      expect(isConnectedB).toBe(true);
+      
+      // === PHASE 3: Live sync - Insert on A, verify on B ===
+      await pageA.evaluate(async (name) => {
+        await (window as any).execSql(name, "INSERT INTO items (name, value) VALUES ('item-1', 100)");
+      }, sharedDbName);
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      let dataB = await pageB.evaluate(async (name) => {
+        return await (window as any).execSql(name, 'SELECT * FROM items ORDER BY name');
+      }, sharedDbName);
+      
+      expect(dataB.rows.length).toBe(1);
+      expect((dataB.rows[0] as any).name).toBe('item-1');
+      
+      // === PHASE 4: Live sync - Insert on B, verify on A ===
+      await pageB.evaluate(async (name) => {
+        await (window as any).execSql(name, "INSERT INTO items (name, value) VALUES ('item-2', 200)");
+      }, sharedDbName);
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      let dataA = await pageA.evaluate(async (name) => {
+        return await (window as any).execSql(name, 'SELECT * FROM items ORDER BY name');
+      }, sharedDbName);
+      
+      expect(dataA.rows.length).toBe(2);
+      
+      // === PHASE 5: Disconnect B from A ===
+      const peerIdA = await pageA.evaluate((name) => (window as any).getPeerId(name), sharedDbName);
+      
+      await pageB.evaluate(async ({ dbName, peerId }) => {
+        await (window as any).disconnectFromPeer(dbName, peerId);
+      }, { dbName: sharedDbName, peerId: peerIdA });
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Verify disconnected
+      const isConnectedAfterDisconnect = await pageB.evaluate((name) => (window as any).isConnected(name), sharedDbName);
+      expect(isConnectedAfterDisconnect).toBe(false);
+      
+      // === PHASE 6: Make changes on both sides while disconnected ===
+      // Insert on A (should queue since B disconnected, but A might still have B in its list)
+      await pageA.evaluate(async (name) => {
+        await (window as any).execSql(name, "INSERT INTO items (name, value) VALUES ('item-3-from-a', 300)");
+      }, sharedDbName);
+      
+      // Insert on B (will definitely queue since B has no peers)
+      await pageB.evaluate(async (name) => {
+        await (window as any).execSql(name, "INSERT INTO items (name, value) VALUES ('item-4-from-b', 400)");
+      }, sharedDbName);
+      
+      // Check B has queued operations
+      const queueB = await pageB.evaluate((name) => (window as any).getQueuedOperations(name), sharedDbName);
+      expect(queueB.length).toBeGreaterThanOrEqual(1);
+      
+      // === PHASE 7: Reconnect B to A ===
+      await pageB.evaluate(async ({ dbName, peerId }) => {
+        await (window as any).connectToPeer(dbName, peerId);
+      }, { dbName: sharedDbName, peerId: peerIdA });
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Verify reconnected
+      const isReconnected = await pageB.evaluate((name) => (window as any).isConnected(name), sharedDbName);
+      expect(isReconnected).toBe(true);
+      
+      // === PHASE 8: Push queued operations from B ===
+      await pageB.evaluate(async (name) => {
+        await (window as any).pushQueuedOperations(name);
+      }, sharedDbName);
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Verify B's queue is empty
+      const queueAfterPush = await pageB.evaluate((name) => (window as any).getQueuedOperations(name), sharedDbName);
+      expect(queueAfterPush.length).toBe(0);
+      
+      // === PHASE 9: Pull A's data to B to get item-3-from-a ===
+      // (A's insert while "disconnected" may have gone to a stale connection)
+      await pageB.evaluate(async ({ dbName, peerId }) => {
+        await (window as any).exportToPeer(dbName, peerId);
+      }, { dbName: sharedDbName, peerId: peerIdA });
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // === PHASE 10: Verify both databases have all items ===
+      dataA = await pageA.evaluate(async (name) => {
+        return await (window as any).execSql(name, 'SELECT * FROM items ORDER BY name');
+      }, sharedDbName);
+      
+      dataB = await pageB.evaluate(async (name) => {
+        return await (window as any).execSql(name, 'SELECT * FROM items ORDER BY name');
+      }, sharedDbName);
+      
+      // Both should have all 4 items
+      expect(dataA.rows.length).toBe(4);
+      expect(dataB.rows.length).toBe(4);
+      
+      // Verify the data matches
+      const namesA = dataA.rows.map((r: any) => r.name).sort();
+      const namesB = dataB.rows.map((r: any) => r.name).sort();
+      
+      expect(namesA).toEqual(['item-1', 'item-2', 'item-3-from-a', 'item-4-from-b']);
+      expect(namesB).toEqual(['item-1', 'item-2', 'item-3-from-a', 'item-4-from-b']);
+      
+      // Verify values match too
+      const valuesA = dataA.rows.map((r: any) => r.value).sort((a: number, b: number) => a - b);
+      const valuesB = dataB.rows.map((r: any) => r.value).sort((a: number, b: number) => a - b);
+      
+      expect(valuesA).toEqual([100, 200, 300, 400]);
+      expect(valuesB).toEqual([100, 200, 300, 400]);
+      
+      // Cleanup
+      await pageA.evaluate((name) => (window as any).closeDb(name), sharedDbName);
+      await pageB.evaluate((name) => (window as any).closeDb(name), sharedDbName);
+    } finally {
+      await contextA.close();
+      await contextB.close();
+    }
+  });
+
+  test('Test 11: Merge sync preserves data from both peers', async ({ browser }) => {
+    const contextA = await browser.newContext();
+    const contextB = await browser.newContext();
+    const pageA = await createPeerPageInContext(contextA);
+    const pageB = await createPeerPageInContext(contextB);
+    
+    try {
+      const sharedDbName = uniqueDbName('merge-sync');
+      
+      // === PHASE 1: Create databases with different initial data ===
+      await pageA.evaluate(async (name) => {
+        await (window as any).createSyncingDb(name);
+        await (window as any).execSql(name, 'CREATE TABLE IF NOT EXISTS items (name TEXT, value INTEGER)');
+        // Insert data only on A
+        await (window as any).execSql(name, "INSERT INTO items (name, value) VALUES ('only-on-a', 100)");
+        await (window as any).execSql(name, "INSERT INTO items (name, value) VALUES ('shared-item', 50)");
+      }, sharedDbName);
+      
+      await pageB.evaluate(async (name) => {
+        await (window as any).createSyncingDb(name);
+        await (window as any).execSql(name, 'CREATE TABLE IF NOT EXISTS items (name TEXT, value INTEGER)');
+        // Insert different data only on B
+        await (window as any).execSql(name, "INSERT INTO items (name, value) VALUES ('only-on-b', 200)");
+      }, sharedDbName);
+      
+      // === PHASE 2: Wait for auto-discovery ===
+      await new Promise(resolve => setTimeout(resolve, 8000));
+      
+      // Verify connected
+      const isConnected = await pageA.evaluate((name) => (window as any).isConnected(name), sharedDbName);
+      expect(isConnected).toBe(true);
+      
+      // Get peer IDs
+      const peerIdB = await pageB.evaluate((name) => (window as any).getPeerId(name), sharedDbName);
+      
+      // === PHASE 3: Use syncWithPeer for bidirectional merge ===
+      await pageA.evaluate(async ({ dbName, peerId }) => {
+        await (window as any).syncWithPeer(dbName, peerId);
+      }, { dbName: sharedDbName, peerId: peerIdB });
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // === PHASE 4: Verify both databases have all data (merged, not overwritten) ===
+      const dataA = await pageA.evaluate(async (name) => {
+        return await (window as any).execSql(name, 'SELECT * FROM items ORDER BY name');
+      }, sharedDbName);
+      
+      const dataB = await pageB.evaluate(async (name) => {
+        return await (window as any).execSql(name, 'SELECT * FROM items ORDER BY name');
+      }, sharedDbName);
+      
+      // Both should have all 3 items
+      expect(dataA.rows.length).toBe(3);
+      expect(dataB.rows.length).toBe(3);
+      
+      const namesA = dataA.rows.map((r: any) => r.name).sort();
+      const namesB = dataB.rows.map((r: any) => r.name).sort();
+      
+      expect(namesA).toEqual(['only-on-a', 'only-on-b', 'shared-item']);
+      expect(namesB).toEqual(['only-on-a', 'only-on-b', 'shared-item']);
+      
+      // Cleanup
+      await pageA.evaluate((name) => (window as any).closeDb(name), sharedDbName);
+      await pageB.evaluate((name) => (window as any).closeDb(name), sharedDbName);
+    } finally {
+      await contextA.close();
+      await contextB.close();
+    }
+  });
+
+  test('Test 12: syncWithAllPeers syncs with multiple peers', async ({ browser }) => {
+    const contextA = await browser.newContext();
+    const contextB = await browser.newContext();
+    const contextC = await browser.newContext();
+    const pageA = await createPeerPageInContext(contextA);
+    const pageB = await createPeerPageInContext(contextB);
+    const pageC = await createPeerPageInContext(contextC);
+    
+    try {
+      const sharedDbName = uniqueDbName('multi-merge');
+      
+      // === PHASE 1: Create databases with different initial data ===
+      await pageA.evaluate(async (name) => {
+        await (window as any).createSyncingDb(name);
+        await (window as any).execSql(name, 'CREATE TABLE IF NOT EXISTS items (name TEXT)');
+        await (window as any).execSql(name, "INSERT INTO items (name) VALUES ('from-a')");
+      }, sharedDbName);
+      
+      await pageB.evaluate(async (name) => {
+        await (window as any).createSyncingDb(name);
+        await (window as any).execSql(name, 'CREATE TABLE IF NOT EXISTS items (name TEXT)');
+        await (window as any).execSql(name, "INSERT INTO items (name) VALUES ('from-b')");
+      }, sharedDbName);
+      
+      await pageC.evaluate(async (name) => {
+        await (window as any).createSyncingDb(name);
+        await (window as any).execSql(name, 'CREATE TABLE IF NOT EXISTS items (name TEXT)');
+        await (window as any).execSql(name, "INSERT INTO items (name) VALUES ('from-c')");
+      }, sharedDbName);
+      
+      // === PHASE 2: Wait for auto-discovery ===
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
+      // Verify A is connected to at least one peer
+      const peersA = await pageA.evaluate((name) => (window as any).getConnectedPeers(name), sharedDbName);
+      expect(peersA.length).toBeGreaterThanOrEqual(1);
+      
+      // === PHASE 3: Use syncWithAllPeers from A ===
+      await pageA.evaluate(async (name) => {
+        await (window as any).syncWithAllPeers(name);
+      }, sharedDbName);
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // === PHASE 4: Sync B and C with all their peers too ===
+      await pageB.evaluate(async (name) => {
+        await (window as any).syncWithAllPeers(name);
+      }, sharedDbName);
+      
+      await pageC.evaluate(async (name) => {
+        await (window as any).syncWithAllPeers(name);
+      }, sharedDbName);
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // === PHASE 5: Verify all databases have all data ===
+      const dataA = await pageA.evaluate(async (name) => {
+        return await (window as any).execSql(name, 'SELECT * FROM items ORDER BY name');
+      }, sharedDbName);
+      
+      const dataB = await pageB.evaluate(async (name) => {
+        return await (window as any).execSql(name, 'SELECT * FROM items ORDER BY name');
+      }, sharedDbName);
+      
+      const dataC = await pageC.evaluate(async (name) => {
+        return await (window as any).execSql(name, 'SELECT * FROM items ORDER BY name');
+      }, sharedDbName);
+      
+      // All should have all 3 items
+      expect(dataA.rows.length).toBe(3);
+      expect(dataB.rows.length).toBe(3);
+      expect(dataC.rows.length).toBe(3);
+      
+      const namesA = dataA.rows.map((r: any) => r.name).sort();
+      const namesB = dataB.rows.map((r: any) => r.name).sort();
+      const namesC = dataC.rows.map((r: any) => r.name).sort();
+      
+      expect(namesA).toEqual(['from-a', 'from-b', 'from-c']);
+      expect(namesB).toEqual(['from-a', 'from-b', 'from-c']);
+      expect(namesC).toEqual(['from-a', 'from-b', 'from-c']);
+      
+      // Cleanup
+      await pageA.evaluate((name) => (window as any).closeDb(name), sharedDbName);
+      await pageB.evaluate((name) => (window as any).closeDb(name), sharedDbName);
+      await pageC.evaluate((name) => (window as any).closeDb(name), sharedDbName);
+    } finally {
+      await contextA.close();
+      await contextB.close();
+      await contextC.close();
+    }
+  });
 });

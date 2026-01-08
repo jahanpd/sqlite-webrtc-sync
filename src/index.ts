@@ -509,6 +509,54 @@ export class SyncableDatabase {
     await Promise.all(promises);
   }
 
+  async mergeFromPeer(peerId: string): Promise<void> {
+    const peerConnection = this.peers.get(peerId);
+    if (!peerConnection) {
+      throw new Error(`Peer ${peerId} not connected`);
+    }
+    await peerConnection.requestMerge();
+  }
+
+  async mergeToPeer(peerId: string): Promise<void> {
+    const peerConnection = this.peers.get(peerId);
+    if (!peerConnection) {
+      throw new Error(`Peer ${peerId} not connected`);
+    }
+    await peerConnection.pushMerge();
+  }
+
+  async mergeFromAllPeers(): Promise<void> {
+    const promises = Array.from(this.peers.keys()).map(peerId => 
+      this.mergeFromPeer(peerId).catch(err => 
+        console.error(`Failed to merge from ${peerId}:`, err)
+      )
+    );
+    await Promise.all(promises);
+  }
+
+  async mergeToAllPeers(): Promise<void> {
+    const promises = Array.from(this.peers.keys()).map(peerId => 
+      this.mergeToPeer(peerId).catch(err => 
+        console.error(`Failed to merge to ${peerId}:`, err)
+      )
+    );
+    await Promise.all(promises);
+  }
+
+  async syncWithPeer(peerId: string): Promise<void> {
+    await this.mergeFromPeer(peerId);
+    await this.mergeToPeer(peerId);
+  }
+
+  async syncWithAllPeers(): Promise<void> {
+    const promises = Array.from(this.peers.keys()).map(peerId => 
+      this.syncWithPeer(peerId).catch(err => 
+        console.error(`Failed to sync with ${peerId}:`, err)
+      )
+    );
+    await Promise.all(promises);
+  }
+
   async merge(remoteData: Uint8Array): Promise<void> {
     if (!this.isInitialized) {
       throw new Error('Database not initialized');
@@ -640,6 +688,7 @@ class PeerConnection {
   private db: SyncableDatabase;
   private pendingExport: { resolve: () => void; reject: (err: Error) => void } | null = null;
   private pendingImport: { resolve: () => void; reject: (err: Error) => void } | null = null;
+  private pendingMerge: { resolve: () => void; reject: (err: Error) => void } | null = null;
 
   constructor(peerId: string, connection: import('peerjs').DataConnection, db: SyncableDatabase) {
     this.peerId = peerId;
@@ -662,17 +711,31 @@ class PeerConnection {
         this.connection.send({ type: 'exportData', data: Array.from(exportData) });
       } else if (msg.type === 'importData' && msg.data) {
         await this.db.import(new Uint8Array(msg.data));
+      } else if (msg.type === 'mergeRequest') {
+        // Remote wants our data for merging
+        const exportData = await this.db.export();
+        this.connection.send({ type: 'mergeData', data: Array.from(exportData) });
+      } else if (msg.type === 'mergeData' && msg.data) {
+        // Response to our mergeRequest - merge their data into ours
+        await this.db.merge(new Uint8Array(msg.data));
+        this.pendingMerge?.resolve();
+        this.pendingMerge = null;
+      } else if (msg.type === 'pushMergeData' && msg.data) {
+        // Remote is pushing their data for us to merge
+        await this.db.merge(new Uint8Array(msg.data));
       }
     });
 
     this.connection.on('close', () => {
       this.pendingExport?.reject(new Error('Connection closed'));
       this.pendingImport?.reject(new Error('Connection closed'));
+      this.pendingMerge?.reject(new Error('Connection closed'));
     });
 
     this.connection.on('error', (err: Error) => {
       this.pendingExport?.reject(err);
       this.pendingImport?.reject(err);
+      this.pendingMerge?.reject(err);
     });
   }
   
@@ -708,6 +771,38 @@ class PeerConnection {
     const exportData = await this.db.export();
     this.connection.send({ type: 'importData', data: Array.from(exportData) });
 
+    return new Promise<void>((resolve) => {
+      setTimeout(resolve, 100);
+    });
+  }
+
+  async requestMerge(): Promise<void> {
+    if (!this.connection.open) {
+      throw new Error(`Peer ${this.peerId} not connected`);
+    }
+
+    this.connection.send({ type: 'mergeRequest' });
+
+    return new Promise((resolve, reject) => {
+      this.pendingMerge = { resolve, reject };
+      setTimeout(() => {
+        if (this.pendingMerge) {
+          this.pendingMerge.reject(new Error('Merge request timed out'));
+          this.pendingMerge = null;
+        }
+      }, 30000);
+    });
+  }
+
+  async pushMerge(): Promise<void> {
+    if (!this.connection.open) {
+      throw new Error(`Peer ${this.peerId} not connected`);
+    }
+
+    const exportData = await this.db.export();
+    this.connection.send({ type: 'pushMergeData', data: Array.from(exportData) });
+
+    // Small delay to allow message to be processed
     return new Promise<void>((resolve) => {
       setTimeout(resolve, 100);
     });

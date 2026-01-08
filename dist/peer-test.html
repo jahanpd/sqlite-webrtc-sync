@@ -212,6 +212,61 @@
       return window.syncEvents.get(dbName) || { peerConnected: [], peerDisconnected: [], syncReceived: [] };
     };
 
+    // Merge-based sync methods
+    window.mergeFromPeer = async function(dbName, peerId) {
+      log(`Database ${dbName} merging from peer: ${peerId}`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.mergeFromPeer(peerId);
+      log(`Database ${dbName} merged from peer: ${peerId}`);
+      return { success: true };
+    };
+
+    window.mergeToPeer = async function(dbName, peerId) {
+      log(`Database ${dbName} merging to peer: ${peerId}`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.mergeToPeer(peerId);
+      log(`Database ${dbName} merged to peer: ${peerId}`);
+      return { success: true };
+    };
+
+    window.mergeFromAllPeers = async function(dbName) {
+      log(`Database ${dbName} merging from all peers`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.mergeFromAllPeers();
+      log(`Database ${dbName} merged from all peers`);
+      return { success: true };
+    };
+
+    window.mergeToAllPeers = async function(dbName) {
+      log(`Database ${dbName} merging to all peers`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.mergeToAllPeers();
+      log(`Database ${dbName} merged to all peers`);
+      return { success: true };
+    };
+
+    window.syncWithPeer = async function(dbName, peerId) {
+      log(`Database ${dbName} syncing with peer: ${peerId}`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.syncWithPeer(peerId);
+      log(`Database ${dbName} synced with peer: ${peerId}`);
+      return { success: true };
+    };
+
+    window.syncWithAllPeers = async function(dbName) {
+      log(`Database ${dbName} syncing with all peers`);
+      const db = window.databases.get(dbName);
+      if (!db) throw new Error(`Database ${dbName} not found`);
+      await db.syncWithAllPeers();
+      log(`Database ${dbName} synced with all peers`);
+      return { success: true };
+    };
+
     // Signal that the page is ready
     window.pageReady = true;
     log('Peer test harness ready');
