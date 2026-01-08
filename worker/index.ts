@@ -225,6 +225,15 @@ function injectColumns(sql: string): { sql: string; hasUserColumns: boolean } {
   return { sql: newSql, hasUserColumns: false };
 }
 
+// System columns that are auto-managed - use exact match, not substring
+const SYSTEM_COLUMNS = new Set(['id', 'updated_at', 'deleted']);
+
+function isSystemColumn(col: string): boolean {
+  // Remove quotes and trim, then check exact match
+  const cleanCol = col.replace(/["`]/g, '').trim().toLowerCase();
+  return SYSTEM_COLUMNS.has(cleanCol);
+}
+
 function rewriteInsert(sql: string, tableName: string, params?: unknown[]): { sql: string; params: unknown[]; rowId: string } {
   const insertMatch = sql.match(/INSERT\s+INTO\s+["`]?(\w+)["`]?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i);
   
@@ -245,9 +254,8 @@ function rewriteInsert(sql: string, tableName: string, params?: unknown[]): { sq
     const val = valuesStr[i];
     const isPlaceholder = val === '?';
     
-    if (!col.toLowerCase().includes('id') && 
-        !col.toLowerCase().includes('updated_at') && 
-        !col.toLowerCase().includes('deleted')) {
+    // Only filter out exact system columns, not columns containing system column names
+    if (!isSystemColumn(col)) {
       userColumns.push(col);
       
       if (isPlaceholder) {
@@ -304,11 +312,12 @@ function rewriteUpdate(sql: string, tableName: string, params?: unknown[]): { sq
     const eqIndex = part.indexOf('=');
     if (eqIndex === -1) continue;
     
-    const col = part.substring(0, eqIndex).trim().toLowerCase();
+    const col = part.substring(0, eqIndex).trim();
     const val = part.substring(eqIndex + 1).trim();
     const isPlaceholder = val === '?';
     
-    if (!col.includes('id') && !col.includes('updated_at') && !col.includes('deleted')) {
+    // Only filter out exact system columns, not columns containing system column names
+    if (!isSystemColumn(col)) {
       filteredParts.push(part);
       if (isPlaceholder && params) {
         setParams.push(params[paramIndex]);
@@ -575,9 +584,15 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
           result = { rows: [], columns: [], affectedRows: [] };
         } else {
           const processed = processSql(sql, params);
-          const loggedSql = processed.params.length > 0
-            ? processed.sql.replace(/\?/g, (_, i) => JSON.stringify(processed.params[i]))
-            : processed.sql;
+          // Log SQL with params substituted for debugging
+          let loggedSql = processed.sql;
+          if (processed.params.length > 0) {
+            let paramIdx = 0;
+            loggedSql = processed.sql.replace(/\?/g, () => {
+              const val = processed.params[paramIdx++];
+              return JSON.stringify(val);
+            });
+          }
           console.log(`[SQL] ${loggedSql}`);
           lastProcessedSql.set(dbName, processed.sql);
           

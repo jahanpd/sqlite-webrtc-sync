@@ -11693,6 +11693,11 @@ function injectColumns(sql) {
   const newSql = \`CREATE TABLE \${ifNotExistsStr}\${tableName} (\${cleanColumns}, \${systemColumns})\`;
   return { sql: newSql, hasUserColumns: false };
 }
+var SYSTEM_COLUMNS = /* @__PURE__ */ new Set(["id", "updated_at", "deleted"]);
+function isSystemColumn(col) {
+  const cleanCol = col.replace(/["\`]/g, "").trim().toLowerCase();
+  return SYSTEM_COLUMNS.has(cleanCol);
+}
 function rewriteInsert(sql, tableName, params) {
   const insertMatch = sql.match(/INSERT\\s+INTO\\s+["\`]?(\\w+)["\`]?\\s*\\(([^)]+)\\)\\s*VALUES\\s*\\(([^)]+)\\)/i);
   if (!insertMatch) {
@@ -11708,7 +11713,7 @@ function rewriteInsert(sql, tableName, params) {
     const col = originalColumns[i];
     const val = valuesStr[i];
     const isPlaceholder = val === "?";
-    if (!col.toLowerCase().includes("id") && !col.toLowerCase().includes("updated_at") && !col.toLowerCase().includes("deleted")) {
+    if (!isSystemColumn(col)) {
       userColumns.push(col);
       if (isPlaceholder) {
         userValues.push("?");
@@ -11747,10 +11752,10 @@ function rewriteUpdate(sql, tableName, params) {
   for (const part of setParts) {
     const eqIndex = part.indexOf("=");
     if (eqIndex === -1) continue;
-    const col = part.substring(0, eqIndex).trim().toLowerCase();
+    const col = part.substring(0, eqIndex).trim();
     const val = part.substring(eqIndex + 1).trim();
     const isPlaceholder = val === "?";
-    if (!col.includes("id") && !col.includes("updated_at") && !col.includes("deleted")) {
+    if (!isSystemColumn(col)) {
       filteredParts.push(part);
       if (isPlaceholder && params) {
         setParams.push(params[paramIndex]);
@@ -11948,7 +11953,14 @@ async function handleRequest(request) {
           result = { rows: [], columns: [], affectedRows: [] };
         } else {
           const processed = processSql(sql, params);
-          const loggedSql = processed.params.length > 0 ? processed.sql.replace(/\\?/g, (_, i) => JSON.stringify(processed.params[i])) : processed.sql;
+          let loggedSql = processed.sql;
+          if (processed.params.length > 0) {
+            let paramIdx = 0;
+            loggedSql = processed.sql.replace(/\\?/g, () => {
+              const val = processed.params[paramIdx++];
+              return JSON.stringify(val);
+            });
+          }
           console.log(\`[SQL] \${loggedSql}\`);
           lastProcessedSql.set(dbName, processed.sql);
           if (processed.isMutation && processed.table) {

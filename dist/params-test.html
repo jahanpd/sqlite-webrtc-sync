@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parameterized Query Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+    .log { color: #666; }
+    .section { margin-top: 20px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Parameterized Query Tests (db.exec)</h1>
+  <div id="results"></div>
+  <script type="module">
+    import { createDatabase } from './index.js';
+
+    const results = document.getElementById('results');
+    let passed = 0;
+    let failed = 0;
+    const testResults = [];
+
+    function log(msg, type = 'log') {
+      const div = document.createElement('div');
+      div.className = type;
+      div.textContent = msg;
+      results.appendChild(div);
+      console.log(`[${type}] ${msg}`);
+    }
+
+    function section(name) {
+      const div = document.createElement('div');
+      div.className = 'section';
+      div.textContent = `\n=== ${name} ===`;
+      results.appendChild(div);
+      console.log(`\n=== ${name} ===`);
+    }
+
+    async function test(name, fn) {
+      try {
+        await fn();
+        passed++;
+        testResults.push({ name, passed: true });
+        log(`PASS: ${name}`, 'pass');
+      } catch (error) {
+        failed++;
+        testResults.push({ name, passed: false, error: error.message });
+        log(`FAIL: ${name} - ${error.message}`, 'fail');
+        console.error(error);
+      }
+    }
+
+    function assertEqual(actual, expected, message) {
+      if (actual !== expected) {
+        throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+      }
+    }
+
+    function assertRowCount(rows, expected, message) {
+      if (rows.length !== expected) {
+        throw new Error(`${message}: expected ${expected} rows, got ${rows.length}`);
+      }
+    }
+
+    async function runTests() {
+      log('Starting parameterized query tests...', 'log');
+      
+      const dbName = 'params-test-' + Date.now();
+      const db = await createDatabase(dbName, { mode: 'local' });
+
+      // Setup tables
+      await db.exec('CREATE TABLE patients (name TEXT, age INTEGER, email TEXT)');
+      await db.exec('CREATE TABLE reminders (patient_id TEXT, note TEXT, priority INTEGER)');
+      await db.exec('CREATE TABLE items (category TEXT, name TEXT, price INTEGER)');
+
+      // ============================================
+      // SELECT with Parameters
+      // ============================================
+      section('SELECT with Parameters');
+
+      // Insert test data for SELECT tests
+      await db.exec("INSERT INTO patients (name, age, email) VALUES ('Alice', 30, 'alice@test.com')");
+      await db.exec("INSERT INTO patients (name, age, email) VALUES ('Bob', 25, 'bob@test.com')");
+      await db.exec("INSERT INTO patients (name, age, email) VALUES ('Carol', 35, 'carol@test.com')");
+
+      await test('SELECT with single string param', async () => {
+        const result = await db.exec('SELECT * FROM patients WHERE name = ?', ['Alice']);
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].name, 'Alice', 'Name');
+        assertEqual(result.rows[0].age, 30, 'Age');
+      });
+
+      await test('SELECT with single integer param', async () => {
+        const result = await db.exec('SELECT * FROM patients WHERE age = ?', [25]);
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].name, 'Bob', 'Name');
+      });
+
+      await test('SELECT with multiple params (AND)', async () => {
+        const result = await db.exec('SELECT * FROM patients WHERE name = ? AND age = ?', ['Alice', 30]);
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].email, 'alice@test.com', 'Email');
+      });
+
+      await test('SELECT with LIKE param', async () => {
+        const result = await db.exec('SELECT * FROM patients WHERE name LIKE ?', ['%o%']);
+        assertRowCount(result.rows, 2, 'Row count'); // Bob and Carol
+      });
+
+      await test('SELECT with comparison param', async () => {
+        const result = await db.exec('SELECT * FROM patients WHERE age > ?', [28]);
+        assertRowCount(result.rows, 2, 'Row count'); // Alice (30) and Carol (35)
+      });
+
+      await test('SELECT with ORDER BY and LIMIT params', async () => {
+        const result = await db.exec('SELECT * FROM patients WHERE age > ? ORDER BY age LIMIT ?', [20, 2]);
+        assertRowCount(result.rows, 2, 'Row count');
+        assertEqual(result.rows[0].name, 'Bob', 'First should be Bob (youngest)');
+      });
+
+      // ============================================
+      // INSERT with Parameters
+      // ============================================
+      section('INSERT with Parameters');
+
+      await test('INSERT with single string param', async () => {
+        await db.exec('INSERT INTO items (category, name, price) VALUES (?, ?, ?)', ['electronics', 'Phone', 500]);
+        const result = await db.exec("SELECT * FROM items WHERE name = 'Phone'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].category, 'electronics', 'Category');
+        assertEqual(result.rows[0].price, 500, 'Price');
+      });
+
+      await test('INSERT with mixed type params', async () => {
+        await db.exec('INSERT INTO items (category, name, price) VALUES (?, ?, ?)', ['books', 'Novel', 15]);
+        const result = await db.exec("SELECT * FROM items WHERE category = 'books'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].name, 'Novel', 'Name');
+        assertEqual(result.rows[0].price, 15, 'Price');
+      });
+
+      await test('INSERT with column name containing "id" substring (patient_id)', async () => {
+        await db.exec('INSERT INTO reminders (patient_id, note, priority) VALUES (?, ?, ?)', ['patient-123', 'Call back', 1]);
+        const result = await db.exec("SELECT * FROM reminders WHERE patient_id = 'patient-123'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].note, 'Call back', 'Note');
+        assertEqual(result.rows[0].priority, 1, 'Priority');
+      });
+
+      await test('INSERT with null param', async () => {
+        await db.exec('INSERT INTO items (category, name, price) VALUES (?, ?, ?)', ['misc', null, 0]);
+        const result = await db.exec("SELECT * FROM items WHERE category = 'misc'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].name, null, 'Name should be null');
+      });
+
+      // ============================================
+      // UPDATE with Parameters
+      // ============================================
+      section('UPDATE with Parameters');
+
+      await test('UPDATE with SET param and WHERE param', async () => {
+        // First insert a row to update
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('update-test', 'Original', 100)");
+        
+        // Update with params
+        await db.exec('UPDATE items SET price = ? WHERE name = ?', [200, 'Original']);
+        
+        const result = await db.exec("SELECT * FROM items WHERE name = 'Original'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].price, 200, 'Price should be updated to 200');
+      });
+
+      await test('UPDATE with multiple SET params', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('multi-update', 'Item1', 50)");
+        
+        await db.exec('UPDATE items SET category = ?, price = ? WHERE name = ?', ['updated-category', 999, 'Item1']);
+        
+        const result = await db.exec("SELECT * FROM items WHERE name = 'Item1'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].category, 'updated-category', 'Category');
+        assertEqual(result.rows[0].price, 999, 'Price');
+      });
+
+      await test('UPDATE with multiple WHERE params', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('where-test', 'WhereItem', 75)");
+        
+        await db.exec('UPDATE items SET price = ? WHERE category = ? AND name = ?', [150, 'where-test', 'WhereItem']);
+        
+        const result = await db.exec("SELECT * FROM items WHERE name = 'WhereItem'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].price, 150, 'Price');
+      });
+
+      await test('UPDATE column with "id" in name (patient_id)', async () => {
+        await db.exec("INSERT INTO reminders (patient_id, note, priority) VALUES ('old-patient', 'Update test', 2)");
+        
+        await db.exec('UPDATE reminders SET patient_id = ? WHERE note = ?', ['new-patient', 'Update test']);
+        
+        const result = await db.exec("SELECT * FROM reminders WHERE note = 'Update test'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].patient_id, 'new-patient', 'patient_id should be updated');
+      });
+
+      await test('UPDATE with explicit updated_at param (YOUR FAILING CASE)', async () => {
+        // This is the exact pattern that was reported as failing:
+        // await db.exec('UPDATE reminders SET patient = ?, updated_at = ? WHERE id = ?', [keepPatient.id, Date.now(), reminder.id]);
+        
+        await db.exec("INSERT INTO reminders (patient_id, note, priority) VALUES ('patient-A', 'Explicit timestamp test', 3)");
+        
+        // Get the row ID
+        const beforeResult = await db.exec("SELECT * FROM reminders WHERE note = 'Explicit timestamp test'");
+        const rowId = beforeResult.rows[0].id;
+        const explicitTimestamp = Date.now();
+        
+        // This is the pattern that was failing
+        await db.exec('UPDATE reminders SET patient_id = ?, updated_at = ? WHERE id = ?', ['patient-B', explicitTimestamp, rowId]);
+        
+        const afterResult = await db.exec("SELECT * FROM reminders WHERE note = 'Explicit timestamp test'");
+        assertRowCount(afterResult.rows, 1, 'Row count');
+        assertEqual(afterResult.rows[0].patient_id, 'patient-B', 'patient_id should be updated to patient-B');
+      });
+
+      await test('UPDATE with only WHERE param (no SET params)', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('only-where', 'OnlyWhereItem', 300)");
+        
+        // Update with literal value in SET, param in WHERE
+        await db.exec("UPDATE items SET price = 400 WHERE name = ?", ['OnlyWhereItem']);
+        
+        const result = await db.exec("SELECT * FROM items WHERE name = 'OnlyWhereItem'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].price, 400, 'Price');
+      });
+
+      await test('UPDATE with 3 SET params and 1 WHERE param', async () => {
+        await db.exec("INSERT INTO patients (name, age, email) VALUES ('UpdateMe', 40, 'old@test.com')");
+        
+        await db.exec('UPDATE patients SET name = ?, age = ?, email = ? WHERE name = ?', ['Updated', 41, 'new@test.com', 'UpdateMe']);
+        
+        const result = await db.exec("SELECT * FROM patients WHERE name = 'Updated'");
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].age, 41, 'Age');
+        assertEqual(result.rows[0].email, 'new@test.com', 'Email');
+      });
+
+      // ============================================
+      // DELETE with Parameters
+      // ============================================
+      section('DELETE with Parameters');
+
+      await test('DELETE with single WHERE param', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('delete-test', 'ToDelete', 100)");
+        
+        // Verify it exists
+        let result = await db.exec("SELECT * FROM items WHERE name = 'ToDelete'");
+        assertRowCount(result.rows, 1, 'Should exist before delete');
+        
+        await db.exec('DELETE FROM items WHERE name = ?', ['ToDelete']);
+        
+        result = await db.exec("SELECT * FROM items WHERE name = 'ToDelete'");
+        assertRowCount(result.rows, 0, 'Should be deleted (soft delete)');
+      });
+
+      await test('DELETE with multiple WHERE params', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('delete-multi', 'MultiDelete', 200)");
+        
+        await db.exec('DELETE FROM items WHERE category = ? AND name = ?', ['delete-multi', 'MultiDelete']);
+        
+        const result = await db.exec("SELECT * FROM items WHERE name = 'MultiDelete'");
+        assertRowCount(result.rows, 0, 'Should be deleted');
+      });
+
+      await test('DELETE with id param', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('delete-by-id', 'DeleteById', 300)");
+        
+        const insertResult = await db.exec("SELECT * FROM items WHERE name = 'DeleteById'");
+        const rowId = insertResult.rows[0].id;
+        
+        await db.exec('DELETE FROM items WHERE id = ?', [rowId]);
+        
+        const result = await db.exec("SELECT * FROM items WHERE name = 'DeleteById'");
+        assertRowCount(result.rows, 0, 'Should be deleted');
+      });
+
+      // ============================================
+      // Edge Cases
+      // ============================================
+      section('Edge Cases');
+
+      await test('Empty params array', async () => {
+        const result = await db.exec('SELECT * FROM patients WHERE age > 20', []);
+        // Should work, just no params to bind
+        assertRowCount(result.rows, 4, 'Should return all patients with age > 20'); // Alice, Bob, Carol, Updated
+      });
+
+      await test('Undefined params', async () => {
+        const result = await db.exec('SELECT * FROM patients WHERE age > 20', undefined);
+        // Should work, same as no params
+        assertRowCount(result.rows, 4, 'Should return all patients');
+      });
+
+      await test('Param with special characters', async () => {
+        await db.exec("INSERT INTO patients (name, age, email) VALUES (?, ?, ?)", ["O'Brien", 45, "o'brien@test.com"]);
+        
+        const result = await db.exec("SELECT * FROM patients WHERE name = ?", ["O'Brien"]);
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].name, "O'Brien", 'Name with apostrophe');
+      });
+
+      await test('Many params (10+)', async () => {
+        // Create a query with many OR conditions
+        const result = await db.exec(
+          'SELECT * FROM patients WHERE name = ? OR name = ? OR name = ? OR name = ? OR name = ? OR age = ? OR age = ? OR age = ? OR age = ? OR age = ?',
+          ['Alice', 'Bob', 'NoMatch1', 'NoMatch2', 'NoMatch3', 30, 25, 999, 998, 997]
+        );
+        // Should match Alice (name) and Bob (name) and Alice (age 30) and Bob (age 25)
+        // But Alice and Bob are unique, so just 2 rows
+        assertRowCount(result.rows, 2, 'Should match Alice and Bob');
+      });
+
+      await test('Integer zero as param', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('zero-test', 'FreeItem', 0)");
+        
+        const result = await db.exec('SELECT * FROM items WHERE price = ?', [0]);
+        // Should find at least our FreeItem and the null test item
+        const freeItem = result.rows.find(r => r.name === 'FreeItem');
+        assertEqual(freeItem !== undefined, true, 'Should find FreeItem with price 0');
+      });
+
+      await test('Empty string as param', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('', 'EmptyCat', 10)");
+        
+        const result = await db.exec('SELECT * FROM items WHERE category = ?', ['']);
+        assertRowCount(result.rows, 1, 'Row count');
+        assertEqual(result.rows[0].name, 'EmptyCat', 'Name');
+      });
+
+      // ============================================
+      // Verify data integrity after all tests
+      // ============================================
+      section('Data Integrity Verification');
+
+      await test('All auto-generated columns present on INSERT', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES (?, ?, ?)", ['verify', 'VerifyItem', 123]);
+        
+        const result = await db.exec("SELECT * FROM items WHERE name = 'VerifyItem'");
+        assertRowCount(result.rows, 1, 'Row count');
+        
+        const row = result.rows[0];
+        assertEqual(typeof row.id, 'string', 'id should be a string (UUID)');
+        assertEqual(row.id.length > 0, true, 'id should not be empty');
+        assertEqual(typeof row.updated_at, 'number', 'updated_at should be a number');
+        assertEqual(row.updated_at > 0, true, 'updated_at should be positive');
+        assertEqual(row.deleted, 0, 'deleted should be 0');
+      });
+
+      await test('updated_at changes on UPDATE', async () => {
+        await db.exec("INSERT INTO items (category, name, price) VALUES ('ts-test', 'TimestampItem', 50)");
+        
+        const before = await db.exec("SELECT * FROM items WHERE name = 'TimestampItem'");
+        const beforeTs = before.rows[0].updated_at;
+        
+        // Small delay to ensure timestamp difference
+        await new Promise(r => setTimeout(r, 10));
+        
+        await db.exec('UPDATE items SET price = ? WHERE name = ?', [60, 'TimestampItem']);
+        
+        const after = await db.exec("SELECT * FROM items WHERE name = 'TimestampItem'");
+        const afterTs = after.rows[0].updated_at;
+        
+        assertEqual(afterTs > beforeTs, true, 'updated_at should increase after UPDATE');
+      });
+
+      // ============================================
+      // Cleanup and summary
+      // ============================================
+      await db.close();
+
+      log('', 'log');
+      log(`Tests complete: ${passed} passed, ${failed} failed`, failed > 0 ? 'fail' : 'pass');
+      
+      window.testResults = {
+        total: passed + failed,
+        passed,
+        failed,
+        results: testResults
+      };
+      window.testsComplete = true;
+    }
+
+    window.pageReady = true;
+    runTests().catch(err => {
+      log('Test runner error: ' + err.message, 'fail');
+      console.error(err);
+      window.testsComplete = true;
+      window.testResults = { total: 0, passed: 0, failed: 1, results: [{ name: 'Test runner', passed: false, error: err.message }] };
+    });
+  </script>
+</body>
+</html>
