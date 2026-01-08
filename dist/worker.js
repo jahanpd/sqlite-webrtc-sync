@@ -11946,6 +11946,9 @@ async function handleRequest(request) {
           result = { rows: [], columns: [], affectedRows: [] };
         } else {
           const processed = processSql(sql, params);
+          const loggedSql = processed.params.length > 0 ? processed.sql.replace(/\?/g, (_, i) => JSON.stringify(processed.params[i])) : processed.sql;
+          console.log(`[SQL] ${loggedSql}`);
+          console.log(`[SQL PROCESSED] ${processed.sql}`);
           lastProcessedSql.set(dbName, processed.sql);
           if (processed.isMutation && processed.table) {
             let affectedIds = [];

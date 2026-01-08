@@ -575,7 +575,10 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
           result = { rows: [], columns: [], affectedRows: [] };
         } else {
           const processed = processSql(sql, params);
-					console.log(`[SQL QUERY] ${processed.sql}`)
+          const loggedSql = processed.params.length > 0
+            ? processed.sql.replace(/\?/g, (_, i) => JSON.stringify(processed.params[i]))
+            : processed.sql;
+          console.log(`[SQL] ${loggedSql}`);
           lastProcessedSql.set(dbName, processed.sql);
           
           if (processed.isMutation && processed.table) {
