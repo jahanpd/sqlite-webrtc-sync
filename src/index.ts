@@ -484,6 +484,13 @@ export class SyncableDatabase {
     await this.sendRequest('merge', this.dbName, [Array.from(remoteData)]);
   }
 
+  async mergeBinary(binaryData: Uint8Array): Promise<void> {
+    if (!this.isInitialized) {
+      throw new Error('Database not initialized');
+    }
+    await this.sendRequest('mergeBinary', this.dbName, [Array.from(binaryData)]);
+  }
+
   getPeerId(): string | null {
     return this.peerId;
   }

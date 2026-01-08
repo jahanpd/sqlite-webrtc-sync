@@ -76,6 +76,7 @@ export declare class SyncableDatabase {
     exportToAllPeers(): Promise<void>;
     importFromAllPeers(): Promise<void>;
     merge(remoteData: Uint8Array): Promise<void>;
+    mergeBinary(binaryData: Uint8Array): Promise<void>;
     getPeerId(): string | null;
     getConnectedPeers(): PeerInfo[];
     isConnected(): boolean;

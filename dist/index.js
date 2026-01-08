@@ -11899,21 +11899,36 @@ function processSql(sql, params) {
   }
   return { sql: rewriteQuery(sql), params: params || [], isMutation: false };
 }
+async function mergeFromRemoteDb(localDb, remoteDb) {
+  const localTables = execute(localDb, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_syncable_%' AND name NOT LIKE 'sqlite_%'").rows.map((r) => r.name);
+  const remoteTables = execute(remoteDb, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_syncable_%' AND name NOT LIKE 'sqlite_%'").rows.map((r) => r.name);
+  const allTables = /* @__PURE__ */ new Set([...localTables, ...remoteTables]);
+  for (const tableName of allTables) {
+    await mergeTable(localDb, remoteDb, tableName);
+  }
+}
 async function mergeDatabasesAsync(localDb, remoteData, sqlite3Module) {
-  const tempDb = new sqlite3Module.oo1.DB(":memory:");
+  const remoteDb = new sqlite3Module.oo1.DB(":memory:");
   try {
-    const remoteDb = new sqlite3Module.oo1.DB(":memory:");
     const sql = new TextDecoder().decode(remoteData);
     remoteDb.exec(sql);
-    const localTables = execute(localDb, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_syncable_%'").rows.map((r) => r.name);
-    const remoteTables = execute(remoteDb, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_syncable_%'").rows.map((r) => r.name);
-    const allTables = /* @__PURE__ */ new Set([...localTables, ...remoteTables]);
-    for (const tableName of allTables) {
-      await mergeTable(localDb, remoteDb, tableName);
-    }
-    remoteDb.close();
+    await mergeFromRemoteDb(localDb, remoteDb);
   } finally {
-    tempDb.close();
+    remoteDb.close();
+  }
+}
+async function mergeBinaryAsync(localDb, binaryData, sqlite3Module) {
+  const remoteDb = new sqlite3Module.oo1.DB(":memory:");
+  try {
+    const pData = sqlite3Module.wasm.allocFromTypedArray(binaryData);
+    try {
+      sqlite3Module.capi.sqlite3_deserialize(remoteDb.pointer, "main", pData, binaryData.length, binaryData.length, 0);
+    } finally {
+      sqlite3Module.wasm.dealloc(pData);
+    }
+    await mergeFromRemoteDb(localDb, remoteDb);
+  } finally {
+    remoteDb.close();
   }
 }
 async function mergeTable(localDb, remoteDb, tableName) {
@@ -12104,6 +12119,14 @@ async function handleRequest(request) {
         if (!db) throw new Error(\`Database \${dbName} not found\`);
         const remoteData = new Uint8Array(args[0]);
         await mergeDatabasesAsync(db, remoteData, sqlite3);
+        result = { success: true };
+        break;
+      }
+      case "mergeBinary": {
+        const db = databases.get(dbName);
+        if (!db) throw new Error(\`Database \${dbName} not found\`);
+        const binaryData = new Uint8Array(args[0]);
+        await mergeBinaryAsync(db, binaryData, sqlite3);
         result = { success: true };
         break;
       }
@@ -19060,6 +19083,12 @@ var SyncableDatabase = class _SyncableDatabase {
       throw new Error("Database not initialized");
     }
     await this.sendRequest("merge", this.dbName, [Array.from(remoteData)]);
+  }
+  async mergeBinary(binaryData) {
+    if (!this.isInitialized) {
+      throw new Error("Database not initialized");
+    }
+    await this.sendRequest("mergeBinary", this.dbName, [Array.from(binaryData)]);
   }
   getPeerId() {
     return this.peerId;

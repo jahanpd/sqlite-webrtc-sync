@@ -464,26 +464,46 @@ function processSql(sql: string, params?: unknown[]): ProcessedSql {
   return { sql: rewriteQuery(sql), params: params || [], isMutation: false };
 }
 
+// Core merge logic shared between SQL dump and binary merge
+async function mergeFromRemoteDb(localDb: any, remoteDb: any): Promise<void> {
+  const localTables = execute(localDb, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_syncable_%' AND name NOT LIKE 'sqlite_%'").rows.map((r: any) => r.name);
+  const remoteTables = execute(remoteDb, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_syncable_%' AND name NOT LIKE 'sqlite_%'").rows.map((r: any) => r.name);
+  const allTables = new Set([...localTables, ...remoteTables]);
+  
+  for (const tableName of allTables) {
+    await mergeTable(localDb, remoteDb, tableName);
+  }
+}
+
+// Merge from SQL dump format (used by peer sync)
 async function mergeDatabasesAsync(localDb: any, remoteData: Uint8Array, sqlite3Module: any): Promise<void> {
-  const tempDb = new sqlite3Module.oo1.DB(':memory:');
+  const remoteDb = new sqlite3Module.oo1.DB(':memory:');
   
   try {
-    const remoteDb = new sqlite3Module.oo1.DB(':memory:');
-    
     const sql = new TextDecoder().decode(remoteData);
     remoteDb.exec(sql);
-    
-    const localTables = execute(localDb, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_syncable_%'").rows.map((r: any) => r.name);
-    const remoteTables = execute(remoteDb, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_syncable_%'").rows.map((r: any) => r.name);
-    const allTables = new Set([...localTables, ...remoteTables]);
-    
-    for (const tableName of allTables) {
-      await mergeTable(localDb, remoteDb, tableName);
+    await mergeFromRemoteDb(localDb, remoteDb);
+  } finally {
+    remoteDb.close();
+  }
+}
+
+// Merge from native SQLite binary format (used for file imports)
+async function mergeBinaryAsync(localDb: any, binaryData: Uint8Array, sqlite3Module: any): Promise<void> {
+  const remoteDb = new sqlite3Module.oo1.DB(':memory:');
+  
+  try {
+    // Deserialize the binary data into the in-memory database
+    const pData = sqlite3Module.wasm.allocFromTypedArray(binaryData);
+    try {
+      sqlite3Module.capi.sqlite3_deserialize(remoteDb.pointer, 'main', pData, binaryData.length, binaryData.length, 0);
+    } finally {
+      sqlite3Module.wasm.dealloc(pData);
     }
     
-    remoteDb.close();
+    await mergeFromRemoteDb(localDb, remoteDb);
   } finally {
-    tempDb.close();
+    remoteDb.close();
   }
 }
 
@@ -723,6 +743,15 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
         if (!db) throw new Error(`Database ${dbName} not found`);
         const remoteData = new Uint8Array(args[0] as number[]);
         await mergeDatabasesAsync(db, remoteData, sqlite3);
+        result = { success: true };
+        break;
+      }
+
+      case 'mergeBinary': {
+        const db = databases.get(dbName);
+        if (!db) throw new Error(`Database ${dbName} not found`);
+        const binaryData = new Uint8Array(args[0] as number[]);
+        await mergeBinaryAsync(db, binaryData, sqlite3);
         result = { success: true };
         break;
       }
