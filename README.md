@@ -118,11 +118,26 @@ const connected = db.isConnected();               // boolean
 
 ### Data Sync
 
+**Live Sync (Real-time)**
+
+When connected, mutations are automatically broadcast to peers in real-time. No additional code needed - just connect and changes sync automatically.
+
+**Manual Sync Methods**
+
 ```javascript
+// One-way sync (replace remote with local or vice versa)
 await db.exportToPeer(peerId);      // Pull remote peer's data into local
 await db.importFromPeer(peerId);    // Push local data to remote peer
 await db.exportToAllPeers();        // Pull from all peers
 await db.importFromAllPeers();      // Push to all peers
+
+// Merge sync (combines data using last-write-wins)
+await db.mergeFromPeer(peerId);     // Pull and merge from peer
+await db.mergeToPeer(peerId);       // Push to peer for merging
+await db.mergeFromAllPeers();       // Merge from all connected peers
+await db.mergeToAllPeers();         // Push merge to all connected peers
+await db.syncWithPeer(peerId);      // Bidirectional merge (pull then push)
+await db.syncWithAllPeers();        // Bidirectional merge with all peers
 ```
 
 ### Auto-Discovery
@@ -150,7 +165,16 @@ db.onPeerConnected((peerId) => console.log('Connected:', peerId));
 db.onPeerDisconnected((peerId) => console.log('Disconnected:', peerId));
 db.onSyncReceived((operation) => console.log('Sync:', operation.table, operation.rowId));
 db.onMutation((tables) => console.log('Mutation in:', tables));
+db.onDataChanged(() => console.log('Data changed via merge/import'));
 ```
+
+| Callback | Triggered When |
+|----------|----------------|
+| `onPeerConnected` | A peer connection is established |
+| `onPeerDisconnected` | A peer disconnects |
+| `onSyncReceived` | A real-time sync operation arrives from a peer |
+| `onMutation` | Local SQL mutations (INSERT/UPDATE/DELETE) |
+| `onDataChanged` | Data changes via `merge()`, `mergeBinary()`, `import()`, or `importBinary()` |
 
 ---
 

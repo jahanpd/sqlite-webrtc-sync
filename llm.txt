@@ -49,11 +49,19 @@ disconnectFromPeer(peerId: string): Promise<void>
 getConnectedPeers(): PeerInfo[]  // { id: string, status: 'connecting' | 'connected' | 'disconnected' }
 isConnected(): boolean
 
-// Peer sync
+// Peer sync - one-way (replace)
 exportToPeer(peerId: string): Promise<void>    // pull from peer
 importFromPeer(peerId: string): Promise<void>  // push to peer
 exportToAllPeers(): Promise<void>
 importFromAllPeers(): Promise<void>
+
+// Peer sync - merge (last-write-wins)
+mergeFromPeer(peerId: string): Promise<void>   // pull and merge from peer
+mergeToPeer(peerId: string): Promise<void>     // push to peer for merging
+mergeFromAllPeers(): Promise<void>             // merge from all peers
+mergeToAllPeers(): Promise<void>               // push merge to all peers
+syncWithPeer(peerId: string): Promise<void>    // bidirectional merge
+syncWithAllPeers(): Promise<void>              // bidirectional merge with all
 
 // Auto-discovery
 discoverPeers(): Promise<void>
@@ -68,6 +76,7 @@ onPeerConnected(cb: (peerId: string) => void): void
 onPeerDisconnected(cb: (peerId: string) => void): void
 onSyncReceived(cb: (op: SyncOperation) => void): void
 onMutation(cb: (tables: string[]) => void): void
+onDataChanged(cb: () => void): void  // fires on merge/import operations
 
 // Cleanup
 close(): Promise<void>
@@ -262,6 +271,7 @@ interface SyncOperation {
   id: string;
   timestamp: number;
   sql: string;
+  params?: unknown[];  // bound parameters for the SQL
   table: string;
   rowId: string;
 }
