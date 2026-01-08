@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>useSQL Reactivity Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+    .log { color: #666; margin: 2px 0; }
+    .section { margin-top: 15px; font-weight: bold; color: #333; }
+    #results { white-space: pre-wrap; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18",
+      "react-dom": "https://esm.sh/react-dom@18",
+      "react-dom/client": "https://esm.sh/react-dom@18/client",
+      "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime"
+    }
+  }
+  </script>
+</head>
+<body>
+  <h1>useSQL Reactivity Tests</h1>
+  <div id="root"></div>
+  <div id="results"></div>
+  
+  <script type="module">
+    import React, { useState, useEffect, useRef, useCallback } from 'react';
+    import ReactDOM from 'react-dom/client';
+    import { defineSchema, defineTable, column } from './schema.js';
+    import { DatabaseProvider, useSQL, useDatabase, useMutation } from './react.js';
+    
+    const results = [];
+
+    function log(msg, type = 'log') {
+      console.log(`[${type}] ${msg}`);
+      const div = document.createElement('div');
+      div.className = type;
+      div.textContent = msg;
+      document.getElementById('results').appendChild(div);
+    }
+
+    function section(name) {
+      console.log(`\n=== ${name} ===`);
+      const div = document.createElement('div');
+      div.className = 'section';
+      div.textContent = `\n=== ${name} ===`;
+      document.getElementById('results').appendChild(div);
+    }
+
+    function assert(condition, testName) {
+      if (condition) {
+        log(`PASS: ${testName}`, 'pass');
+        results.push({ name: testName, passed: true });
+        return true;
+      } else {
+        log(`FAIL: ${testName}`, 'fail');
+        results.push({ name: testName, passed: false });
+        return false;
+      }
+    }
+
+    const schema = defineSchema({
+      tasks: defineTable({
+        title: column.text(),
+        completed: column.integer(),
+        priority: column.integer(),
+      }),
+    });
+
+    // Simple component that tracks task count from useSQL
+    function TaskDisplay({ onTaskCountChange }) {
+      const { data: tasks, isLoading } = useSQL(
+        'reactivity-test-db',
+        'SELECT * FROM tasks ORDER BY id',
+        { tables: ['tasks'] }
+      );
+
+      useEffect(() => {
+        if (!isLoading && tasks) {
+          onTaskCountChange(tasks.length);
+        }
+      }, [tasks, isLoading, onTaskCountChange]);
+
+      return React.createElement('div', { id: 'task-display' },
+        `Tasks: ${isLoading ? 'loading' : (tasks?.length ?? 0)}`
+      );
+    }
+
+    function TestRunner() {
+      const db = useDatabase('reactivity-test-db');
+      const mutations = useMutation('reactivity-test-db', 'tasks');
+      const [taskCount, setTaskCount] = useState(0);
+      const [testPhase, setTestPhase] = useState('waiting');
+      const testStarted = useRef(false);
+      const testData = useRef({ insertedIds: [] });
+
+      const handleTaskCountChange = useCallback((count) => {
+        setTaskCount(count);
+      }, []);
+
+      // Run tests after db is ready
+      useEffect(() => {
+        if (!db || testStarted.current) return;
+        testStarted.current = true;
+
+        async function runAllTests() {
+          try {
+            setTestPhase('running');
+            
+            // Wait for initial load
+            await new Promise(r => setTimeout(r, 500));
+            
+            // ============================================
+            section('Test 1: INSERT via useMutation');
+            // ============================================
+            const countBefore1 = taskCount;
+            log(`Task count before INSERT (useMutation): ${countBefore1}`);
+            
+            const task1 = await mutations.insert({ title: 'Task via Mutation', completed: 0, priority: 1 });
+            testData.current.insertedIds.push(task1?.id);
+            log(`Inserted task: ${task1?.id}`);
+            
+            await new Promise(r => setTimeout(r, 500));
+            
+            // Check if useSQL re-rendered with new data
+            const taskDisplayEl = document.getElementById('task-display');
+            const countAfter1 = parseInt(taskDisplayEl?.textContent?.match(/Tasks: (\d+)/)?.[1] || '0');
+            log(`Task count after INSERT (useMutation): ${countAfter1}`);
+            
+            assert(countAfter1 > countBefore1, 'INSERT via useMutation triggers re-render');
+            
+            // ============================================
+            section('Test 2: INSERT via db.exec');
+            // ============================================
+            const countBefore2 = countAfter1;
+            log(`Task count before INSERT (db.exec): ${countBefore2}`);
+            
+            const insertResult = await db.exec(
+              "INSERT INTO tasks (title, completed, priority) VALUES (?, ?, ?)",
+              ['Task via db.exec', 0, 2]
+            );
+            if (insertResult.affectedRows?.[0]?.id) {
+              testData.current.insertedIds.push(insertResult.affectedRows[0].id);
+            }
+            log(`Inserted via db.exec`);
+            
+            await new Promise(r => setTimeout(r, 500));
+            
+            const countAfter2 = parseInt(document.getElementById('task-display')?.textContent?.match(/Tasks: (\d+)/)?.[1] || '0');
+            log(`Task count after INSERT (db.exec): ${countAfter2}`);
+            
+            const insertDbExecWorks = countAfter2 > countBefore2;
+            assert(insertDbExecWorks, 'INSERT via db.exec triggers re-render');
+            if (!insertDbExecWorks) {
+              log('BUG: db.exec INSERT did not trigger useSQL reactivity!', 'fail');
+            }
+            
+            // ============================================
+            section('Test 3: UPDATE via useMutation');
+            // ============================================
+            const id1 = testData.current.insertedIds[0];
+            if (id1) {
+              // Get current state
+              const beforeUpdate = await db.exec("SELECT completed FROM tasks WHERE id = ?", [id1]);
+              log(`Completed before UPDATE (useMutation): ${beforeUpdate.rows[0]?.completed}`);
+              
+              await mutations.update(id1, { completed: 1 });
+              log(`Updated task ${id1} to completed=1`);
+              
+              await new Promise(r => setTimeout(r, 500));
+              
+              const afterUpdate = await db.exec("SELECT completed FROM tasks WHERE id = ?", [id1]);
+              log(`Completed after UPDATE (useMutation): ${afterUpdate.rows[0]?.completed}`);
+              
+              assert(afterUpdate.rows[0]?.completed === 1, 'UPDATE via useMutation works');
+            }
+            
+            // ============================================
+            section('Test 4: UPDATE via db.exec');
+            // ============================================
+            const id2 = testData.current.insertedIds[1];
+            if (id2) {
+              const beforeUpdate = await db.exec("SELECT priority FROM tasks WHERE id = ?", [id2]);
+              log(`Priority before UPDATE (db.exec): ${beforeUpdate.rows[0]?.priority}`);
+              
+              await db.exec("UPDATE tasks SET priority = ? WHERE id = ?", [99, id2]);
+              log(`Updated task ${id2} priority to 99 via db.exec`);
+              
+              await new Promise(r => setTimeout(r, 500));
+              
+              const afterUpdate = await db.exec("SELECT priority FROM tasks WHERE id = ?", [id2]);
+              log(`Priority after UPDATE (db.exec): ${afterUpdate.rows[0]?.priority}`);
+              
+              const updateDbExecWorks = afterUpdate.rows[0]?.priority === 99;
+              assert(updateDbExecWorks, 'UPDATE via db.exec works');
+            }
+            
+            // ============================================
+            section('Test 5: DELETE via useMutation');
+            // ============================================
+            const countBefore5 = parseInt(document.getElementById('task-display')?.textContent?.match(/Tasks: (\d+)/)?.[1] || '0');
+            log(`Task count before DELETE (useMutation): ${countBefore5}`);
+            
+            if (testData.current.insertedIds[0]) {
+              await mutations.remove(testData.current.insertedIds[0]);
+              log(`Deleted task via useMutation`);
+            }
+            
+            await new Promise(r => setTimeout(r, 500));
+            
+            const countAfter5 = parseInt(document.getElementById('task-display')?.textContent?.match(/Tasks: (\d+)/)?.[1] || '0');
+            log(`Task count after DELETE (useMutation): ${countAfter5}`);
+            
+            assert(countAfter5 < countBefore5, 'DELETE via useMutation triggers re-render');
+            
+            // ============================================
+            section('Test 6: DELETE via db.exec');
+            // ============================================
+            const countBefore6 = countAfter5;
+            log(`Task count before DELETE (db.exec): ${countBefore6}`);
+            
+            if (testData.current.insertedIds[1]) {
+              await db.exec("DELETE FROM tasks WHERE id = ?", [testData.current.insertedIds[1]]);
+              log(`Deleted task via db.exec`);
+            }
+            
+            await new Promise(r => setTimeout(r, 500));
+            
+            const countAfter6 = parseInt(document.getElementById('task-display')?.textContent?.match(/Tasks: (\d+)/)?.[1] || '0');
+            log(`Task count after DELETE (db.exec): ${countAfter6}`);
+            
+            const deleteDbExecWorks = countAfter6 < countBefore6;
+            assert(deleteDbExecWorks, 'DELETE via db.exec triggers re-render');
+            if (!deleteDbExecWorks) {
+              log('BUG: db.exec DELETE did not trigger useSQL reactivity!', 'fail');
+            }
+            
+            // ============================================
+            section('Summary');
+            // ============================================
+            setTestPhase('complete');
+            
+            window.testResults = {
+              total: results.length,
+              passed: results.filter(r => r.passed).length,
+              failed: results.filter(r => !r.passed).length,
+              results: results
+            };
+            window.testsComplete = true;
+            
+            log(`\nTests complete: ${window.testResults.passed}/${window.testResults.total} passed`);
+            
+            if (window.testResults.failed > 0) {
+              log('\nFailed tests:', 'fail');
+              results.filter(r => !r.passed).forEach(r => {
+                log(`  - ${r.name}`, 'fail');
+              });
+            } else {
+              log('\nAll tests passed!', 'pass');
+            }
+
+          } catch (err) {
+            log(`Test error: ${err.message}`, 'fail');
+            console.error(err);
+            results.push({ name: 'Test error', passed: false, error: err.message });
+            
+            window.testResults = {
+              total: results.length,
+              passed: results.filter(r => r.passed).length,
+              failed: results.filter(r => !r.passed).length,
+              results: results
+            };
+            window.testsComplete = true;
+          }
+        }
+
+        // Start tests after a short delay
+        setTimeout(runAllTests, 1000);
+      }, [db, mutations]);
+
+      return React.createElement('div', null,
+        React.createElement('h3', null, `Phase: ${testPhase}`),
+        React.createElement(TaskDisplay, { onTaskCountChange: handleTaskCountChange }),
+        React.createElement('p', null, `Current task count state: ${taskCount}`)
+      );
+    }
+
+    function App() {
+      return React.createElement(
+        DatabaseProvider,
+        { name: 'reactivity-test-db', schema: schema, mode: 'local' },
+        React.createElement(TestRunner, null)
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App, null));
+    window.pageReady = true;
+  </script>
+</body>
+</html>

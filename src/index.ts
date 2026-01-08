@@ -41,6 +41,7 @@ export interface SyncOperation {
 type PeerConnectedCallback = (peerId: string) => void;
 type PeerDisconnectedCallback = (peerId: string) => void;
 type SyncReceivedCallback = (operation: SyncOperation) => void;
+type MutationCallback = (tables: string[]) => void;
 
 interface WorkerMessage {
   id: number;
@@ -72,6 +73,7 @@ export class SyncableDatabase {
   private onPeerConnectedCallbacks: PeerConnectedCallback[] = [];
   private onPeerDisconnectedCallbacks: PeerDisconnectedCallback[] = [];
   private onSyncReceivedCallbacks: SyncReceivedCallback[] = [];
+  private onMutationCallbacks: MutationCallback[] = [];
 
   private constructor(dbName: string, mode: DatabaseMode, peerServerConfig?: PeerServerConfig, discoveryInterval?: number) {
     this.dbName = dbName;
@@ -290,20 +292,29 @@ export class SyncableDatabase {
     
     const result = await this.sendRequest('exec', this.dbName, [sql, params]) as QueryResult;
     
-    // If this is a mutation in syncing mode, broadcast to peers
-    if (this.mode === 'syncing' && result.affectedRows && result.affectedRows.length > 0) {
-      const processedSql = (await this.sendRequest('getLastProcessedSql', this.dbName, [])) as string;
+    // If this is a mutation, notify listeners and optionally broadcast to peers
+    if (result.affectedRows && result.affectedRows.length > 0) {
+      // Collect unique affected tables
+      const affectedTables = [...new Set(result.affectedRows.map(r => r.table))];
       
-      for (const affected of result.affectedRows) {
-        const operation: SyncOperation = {
-          id: crypto.randomUUID(),
-          timestamp: Date.now(),
-          sql: processedSql,
-          table: affected.table,
-          rowId: affected.id,
-        };
+      // Emit mutation event for reactivity (useSQL re-renders)
+      this.emitMutation(affectedTables);
+      
+      // If syncing mode, broadcast to peers
+      if (this.mode === 'syncing') {
+        const processedSql = (await this.sendRequest('getLastProcessedSql', this.dbName, [])) as string;
         
-        this.broadcastOperation(operation);
+        for (const affected of result.affectedRows) {
+          const operation: SyncOperation = {
+            id: crypto.randomUUID(),
+            timestamp: Date.now(),
+            sql: processedSql,
+            table: affected.table,
+            rowId: affected.id,
+          };
+          
+          this.broadcastOperation(operation);
+        }
       }
     }
     
@@ -526,6 +537,14 @@ export class SyncableDatabase {
     this.onSyncReceivedCallbacks.push(callback);
   }
   
+  /**
+   * Register a callback that fires when a mutation (INSERT, UPDATE, DELETE) occurs.
+   * This is used by React hooks to trigger re-renders.
+   */
+  onMutation(callback: MutationCallback): void {
+    this.onMutationCallbacks.push(callback);
+  }
+  
   // Event emitters
   private emitPeerConnected(peerId: string): void {
     for (const cb of this.onPeerConnectedCallbacks) {
@@ -542,6 +561,12 @@ export class SyncableDatabase {
   private emitSyncReceived(operation: SyncOperation): void {
     for (const cb of this.onSyncReceivedCallbacks) {
       try { cb(operation); } catch (e) { console.error('Callback error:', e); }
+    }
+  }
+  
+  private emitMutation(tables: string[]): void {
+    for (const cb of this.onMutationCallbacks) {
+      try { cb(tables); } catch (e) { console.error('Callback error:', e); }
     }
   }
 

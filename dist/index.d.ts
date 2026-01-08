@@ -33,6 +33,7 @@ export interface SyncOperation {
 type PeerConnectedCallback = (peerId: string) => void;
 type PeerDisconnectedCallback = (peerId: string) => void;
 type SyncReceivedCallback = (operation: SyncOperation) => void;
+type MutationCallback = (tables: string[]) => void;
 export declare class SyncableDatabase {
     private dbName;
     private mode;
@@ -51,6 +52,7 @@ export declare class SyncableDatabase {
     private onPeerConnectedCallbacks;
     private onPeerDisconnectedCallbacks;
     private onSyncReceivedCallbacks;
+    private onMutationCallbacks;
     private constructor();
     static create(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase>;
     private init;
@@ -83,9 +85,15 @@ export declare class SyncableDatabase {
     onPeerConnected(callback: PeerConnectedCallback): void;
     onPeerDisconnected(callback: PeerDisconnectedCallback): void;
     onSyncReceived(callback: SyncReceivedCallback): void;
+    /**
+     * Register a callback that fires when a mutation (INSERT, UPDATE, DELETE) occurs.
+     * This is used by React hooks to trigger re-renders.
+     */
+    onMutation(callback: MutationCallback): void;
     private emitPeerConnected;
     private emitPeerDisconnected;
     private emitSyncReceived;
+    private emitMutation;
     close(): Promise<void>;
 }
 export declare function createDatabase(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase>;

@@ -68,7 +68,12 @@ export function DatabaseProvider<S extends SchemaDef>({
           await db.exec(sql);
         }
 
-        // Register sync event listener to invalidate queries
+        // Register mutation listener to invalidate queries (for local reactivity)
+        db.onMutation((tables) => {
+          storeRef.current.invalidateTables(tables);
+        });
+
+        // Register sync event listener to invalidate queries (for remote sync)
         if (mode === 'syncing') {
           db.onSyncReceived((operation) => {
             storeRef.current.invalidateTables([operation.table]);
