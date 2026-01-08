@@ -4,11 +4,14 @@ export interface PeerServerConfig {
     port?: number;
     path?: string;
     secure?: boolean;
+    fallbackToCloud?: boolean;
 }
+type FallbackCallback = (reason: string) => void;
 export interface DatabaseConfig {
     mode: DatabaseMode;
     peerServer?: PeerServerConfig;
     discoveryInterval?: number;
+    onFallbackToCloud?: FallbackCallback;
 }
 export interface QueryResult {
     rows: Record<string, unknown>[];
@@ -48,6 +51,7 @@ export declare class SyncableDatabase {
     private pendingRequests;
     private nextRequestId;
     private isInitialized;
+    private activeServerConfig;
     private discoveryTimer;
     private operationQueue;
     private appliedOperations;
@@ -56,6 +60,7 @@ export declare class SyncableDatabase {
     private onSyncReceivedCallbacks;
     private onMutationCallbacks;
     private onDataChangedCallbacks;
+    private onFallbackToCloudCallback?;
     private constructor();
     static create(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase>;
     private init;

@@ -13,6 +13,8 @@ export interface DatabaseProviderProps<S extends SchemaDef> {
     mode: 'syncing' | 'local';
     peerServer?: PeerServerConfig;
     discoveryInterval?: number;
+    /** Callback fired when connection falls back to PeerJS cloud server */
+    onFallbackToCloud?: (reason: string) => void;
     children: React.ReactNode;
 }
 export interface QueryResult<T> {

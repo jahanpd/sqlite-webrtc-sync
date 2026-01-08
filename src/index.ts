@@ -5,12 +5,17 @@ export interface PeerServerConfig {
   port?: number;
   path?: string;
   secure?: boolean;
+  fallbackToCloud?: boolean;  // If true, fall back to PeerJS cloud on connection failure. Default: false
 }
+
+// Callback for when fallback to PeerJS cloud occurs
+type FallbackCallback = (reason: string) => void;
 
 export interface DatabaseConfig {
   mode: DatabaseMode;
   peerServer?: PeerServerConfig;
   discoveryInterval?: number;  // ms, default 5000
+  onFallbackToCloud?: FallbackCallback;  // Called when fallback to PeerJS cloud occurs
 }
 
 export interface QueryResult {
@@ -53,6 +58,22 @@ interface WorkerMessage {
   error?: string;
 }
 
+// PeerJS cloud server defaults
+const PEERJS_CLOUD_HOST = '0.peerjs.com';
+const PEERJS_CLOUD_PORT = 443;
+const PEERJS_CLOUD_PATH = '/';
+const PEERJS_CLOUD_SECURE = true;
+
+// Connection timeout for fallback logic
+const PEER_CONNECTION_TIMEOUT = 10000;
+
+interface ActiveServerConfig {
+  host: string;
+  port: number;
+  path: string;
+  secure: boolean;
+}
+
 export class SyncableDatabase {
   private dbName: string;
   private mode: DatabaseMode;
@@ -66,6 +87,9 @@ export class SyncableDatabase {
   private nextRequestId = 0;
   private isInitialized = false;
   
+  // Active server config (set after successful connection)
+  private activeServerConfig: ActiveServerConfig | null = null;
+  
   // Auto-sync properties
   private discoveryTimer: ReturnType<typeof setInterval> | null = null;
   private operationQueue: SyncOperation[] = [];
@@ -77,16 +101,18 @@ export class SyncableDatabase {
   private onSyncReceivedCallbacks: SyncReceivedCallback[] = [];
   private onMutationCallbacks: MutationCallback[] = [];
   private onDataChangedCallbacks: DataChangedCallback[] = [];
+  private onFallbackToCloudCallback?: FallbackCallback;
 
-  private constructor(dbName: string, mode: DatabaseMode, peerServerConfig?: PeerServerConfig, discoveryInterval?: number) {
+  private constructor(dbName: string, mode: DatabaseMode, peerServerConfig?: PeerServerConfig, discoveryInterval?: number, onFallbackToCloud?: FallbackCallback) {
     this.dbName = dbName;
     this.mode = mode;
     this.peerServerConfig = peerServerConfig;
     this.discoveryInterval = discoveryInterval ?? 5000;
+    this.onFallbackToCloudCallback = onFallbackToCloud;
   }
 
   static async create(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase> {
-    const db = new SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval);
+    const db = new SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval, config.onFallbackToCloud);
     await db.init();
     return db;
   }
@@ -163,44 +189,102 @@ export class SyncableDatabase {
     const uniqueId = crypto.randomUUID().slice(0, 8);
     const peerIdWithPrefix = `${this.dbName}-${uniqueId}`;
     
-    // Build PeerJS options
-    const peerOptions: import('peerjs').PeerOptions = {
-      // Use Google STUN servers as fallback ICE servers
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-        ]
-      }
+    // Helper to create and connect a peer with given options
+    const connectPeer = (options: import('peerjs').PeerOptions, serverConfig: ActiveServerConfig): Promise<void> => {
+      return new Promise((resolve, reject) => {
+        const peer = new Peer(peerIdWithPrefix, options);
+        let connected = false;
+        
+        const timeout = setTimeout(() => {
+          if (!connected) {
+            peer.destroy();
+            reject(new Error('Connection timeout'));
+          }
+        }, PEER_CONNECTION_TIMEOUT);
+        
+        peer.on('open', (id: string) => {
+          connected = true;
+          clearTimeout(timeout);
+          this.peerId = id;
+          this.peer = peer;
+          this.activeServerConfig = serverConfig;
+          resolve();
+        });
+
+        peer.on('connection', (conn: import('peerjs').DataConnection) => {
+          this.handleIncomingConnection(conn);
+        });
+
+        peer.on('error', (err: Error) => {
+          clearTimeout(timeout);
+          if (!connected) {
+            peer.destroy();
+            reject(err);
+          } else {
+            console.error('Peer error:', err);
+          }
+        });
+      });
     };
     
-    // Apply custom peer server config if provided
-    if (this.peerServerConfig) {
-      if (this.peerServerConfig.host) peerOptions.host = this.peerServerConfig.host;
-      if (this.peerServerConfig.port) peerOptions.port = this.peerServerConfig.port;
-      if (this.peerServerConfig.path) peerOptions.path = this.peerServerConfig.path;
-      if (this.peerServerConfig.secure !== undefined) peerOptions.secure = this.peerServerConfig.secure;
+    // Build server config and PeerJS options
+    const hasUserConfig = this.peerServerConfig && 
+      (this.peerServerConfig.host || this.peerServerConfig.port || this.peerServerConfig.path);
+    
+    if (hasUserConfig) {
+      // User provided custom server config - try it first
+      const userServerConfig: ActiveServerConfig = {
+        host: this.peerServerConfig!.host || PEERJS_CLOUD_HOST,
+        port: this.peerServerConfig!.port || PEERJS_CLOUD_PORT,
+        path: this.peerServerConfig!.path || PEERJS_CLOUD_PATH,
+        secure: this.peerServerConfig!.secure ?? PEERJS_CLOUD_SECURE,
+      };
+      
+      const userPeerOptions: import('peerjs').PeerOptions = {
+        host: userServerConfig.host,
+        port: userServerConfig.port,
+        path: userServerConfig.path,
+        secure: userServerConfig.secure,
+      };
+      
+      try {
+        await connectPeer(userPeerOptions, userServerConfig);
+        console.log(`[SyncableDatabase] Connected to peer server: ${userServerConfig.host}:${userServerConfig.port}`);
+        return;
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        console.warn(`[SyncableDatabase] Failed to connect to user peer server (${userServerConfig.host}:${userServerConfig.port}): ${errorMessage}`);
+        
+        // Check if fallback is enabled
+        if (this.peerServerConfig?.fallbackToCloud) {
+          console.log('[SyncableDatabase] Falling back to PeerJS cloud server...');
+          
+          // Notify via callback
+          if (this.onFallbackToCloudCallback) {
+            try {
+              this.onFallbackToCloudCallback(errorMessage);
+            } catch (e) {
+              console.error('Fallback callback error:', e);
+            }
+          }
+        } else {
+          // No fallback - re-throw the error
+          throw err;
+        }
+      }
     }
     
-    // Create peer and wait for it to be ready
-    await new Promise<void>((resolve, reject) => {
-      const peer = new Peer(peerIdWithPrefix, peerOptions);
-      
-      peer.on('open', (id: string) => {
-        this.peerId = id;
-        this.peer = peer;
-        resolve();
-      });
-
-      peer.on('connection', (conn: import('peerjs').DataConnection) => {
-        this.handleIncomingConnection(conn);
-      });
-
-      peer.on('error', (err: Error) => {
-        console.error('Peer error:', err);
-        reject(err);
-      });
-    });
+    // Use PeerJS cloud defaults (either no user config, or fallback after user config failed)
+    const cloudServerConfig: ActiveServerConfig = {
+      host: PEERJS_CLOUD_HOST,
+      port: PEERJS_CLOUD_PORT,
+      path: PEERJS_CLOUD_PATH,
+      secure: PEERJS_CLOUD_SECURE,
+    };
+    
+    // Empty options = PeerJS uses its built-in cloud defaults (including ICE servers with TURN)
+    await connectPeer({}, cloudServerConfig);
+    console.log('[SyncableDatabase] Connected to PeerJS cloud server');
   }
 
   private startDiscovery(): void {
@@ -218,16 +302,14 @@ export class SyncableDatabase {
   }
 
   async discoverPeers(): Promise<void> {
-    if (this.mode !== 'syncing' || !this.peerServerConfig) {
+    if (this.mode !== 'syncing' || !this.activeServerConfig) {
       return;
     }
     
     try {
-      // Query PeerJS server for all connected peers
-      const protocol = this.peerServerConfig.secure ? 'https' : 'http';
-      const host = this.peerServerConfig.host || 'localhost';
-      const port = this.peerServerConfig.port || 9000;
-      const path = this.peerServerConfig.path || '/';
+      // Query PeerJS server for all connected peers using the active server config
+      const { host, port, path, secure } = this.activeServerConfig;
+      const protocol = secure ? 'https' : 'http';
       
       const url = `${protocol}://${host}:${port}${path}peerjs/peers`;
       const response = await fetch(url);

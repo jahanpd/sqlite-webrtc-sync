@@ -35,6 +35,7 @@ export function DatabaseProvider<S extends SchemaDef>({
   mode,
   peerServer,
   discoveryInterval,
+  onFallbackToCloud,
   children,
 }: DatabaseProviderProps<S>): React.ReactElement | null {
   const [contextValue, setContextValue] = useState<DatabaseContextValue<S> | null>(null);
@@ -53,6 +54,7 @@ export function DatabaseProvider<S extends SchemaDef>({
           mode,
           peerServer,
           discoveryInterval,
+          onFallbackToCloud,
         });
 
         if (!mounted) {
@@ -114,7 +116,7 @@ export function DatabaseProvider<S extends SchemaDef>({
       }
       storeRef.current.clear();
     };
-  }, [name, mode, peerServer, discoveryInterval, schema]);
+  }, [name, mode, peerServer, discoveryInterval, onFallbackToCloud, schema]);
 
   // Get context for this database name
   const Context = getOrCreateContext(name);

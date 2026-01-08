@@ -50,16 +50,23 @@ import { createDatabase } from 'syncable-sqlite';
 // Local mode
 const db = await createDatabase('my-db', { mode: 'local' });
 
-// Syncing mode
+// Syncing mode (uses PeerJS cloud by default - zero config!)
+const db = await createDatabase('my-db', { mode: 'syncing' });
+
+// With custom peer server
 const db = await createDatabase('my-db', {
   mode: 'syncing',
   peerServer: {
-    host: 'localhost',
+    host: 'my-server.com',
     port: 9000,
     path: '/',
-    secure: false
+    secure: true,
+    fallbackToCloud: true  // optional: fall back to PeerJS cloud if server fails
   },
-  discoveryInterval: 5000  // optional, default 5000ms
+  discoveryInterval: 5000,  // optional, default 5000ms
+  onFallbackToCloud: (reason) => {
+    console.log('Using PeerJS cloud due to:', reason);
+  }
 });
 ```
 
@@ -142,7 +149,9 @@ await db.syncWithAllPeers();        // Bidirectional merge with all peers
 
 ### Auto-Discovery
 
-Peers with the same database name automatically discover each other when using a PeerJS server with `--allow_discovery`.
+Peers with the same database name automatically discover each other. Discovery works with:
+- **PeerJS cloud** (default): Zero configuration required
+- **Custom PeerJS server**: Run with `--allow_discovery` flag
 
 ```javascript
 await db.discoverPeers();  // Manually trigger discovery
@@ -229,12 +238,24 @@ const schema = defineSchema({
 ### DatabaseProvider
 
 ```tsx
+// Zero-config syncing (uses PeerJS cloud)
+<DatabaseProvider name="my-app" schema={schema} mode="syncing">
+  <App />
+</DatabaseProvider>
+
+// With custom peer server and fallback
 <DatabaseProvider
   name="my-app"
   schema={schema}
   mode="syncing"
-  peerServer={{ host: 'localhost', port: 9000, path: '/', secure: false }}
+  peerServer={{ 
+    host: 'my-server.com', 
+    port: 9000, 
+    secure: true,
+    fallbackToCloud: true 
+  }}
   discoveryInterval={5000}
+  onFallbackToCloud={(reason) => console.log('Fallback:', reason)}
 >
   <App />
 </DatabaseProvider>
@@ -405,10 +426,38 @@ function copySqliteAssetsPlugin() {
 
 ## PeerJS Server
 
+By default, syncing mode uses the **PeerJS public cloud server** - no setup required!
+
+For production or private deployments, run your own server:
+
 ```bash
 npm install --save-dev peer
 npx peerjs --port 9000 --allow_discovery
 ```
+
+Then configure:
+
+```javascript
+const db = await createDatabase('my-db', {
+  mode: 'syncing',
+  peerServer: {
+    host: 'your-server.com',
+    port: 9000,
+    secure: true,
+    fallbackToCloud: true  // optional: use PeerJS cloud as backup
+  }
+});
+```
+
+### Server Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `host` | string | PeerJS cloud | Your PeerJS server hostname |
+| `port` | number | 443 | Server port |
+| `path` | string | `/` | Server path |
+| `secure` | boolean | true | Use HTTPS/WSS |
+| `fallbackToCloud` | boolean | false | Fall back to PeerJS cloud on connection failure |
 
 ---
 

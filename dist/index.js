@@ -18776,6 +18776,11 @@ var init_bundler = __esm({
 });
 
 // src/index.ts
+var PEERJS_CLOUD_HOST = "0.peerjs.com";
+var PEERJS_CLOUD_PORT = 443;
+var PEERJS_CLOUD_PATH = "/";
+var PEERJS_CLOUD_SECURE = true;
+var PEER_CONNECTION_TIMEOUT = 1e4;
 var SyncableDatabase = class _SyncableDatabase {
   dbName;
   mode;
@@ -18788,6 +18793,8 @@ var SyncableDatabase = class _SyncableDatabase {
   pendingRequests = /* @__PURE__ */ new Map();
   nextRequestId = 0;
   isInitialized = false;
+  // Active server config (set after successful connection)
+  activeServerConfig = null;
   // Auto-sync properties
   discoveryTimer = null;
   operationQueue = [];
@@ -18798,14 +18805,16 @@ var SyncableDatabase = class _SyncableDatabase {
   onSyncReceivedCallbacks = [];
   onMutationCallbacks = [];
   onDataChangedCallbacks = [];
-  constructor(dbName, mode, peerServerConfig, discoveryInterval) {
+  onFallbackToCloudCallback;
+  constructor(dbName, mode, peerServerConfig, discoveryInterval, onFallbackToCloud) {
     this.dbName = dbName;
     this.mode = mode;
     this.peerServerConfig = peerServerConfig;
     this.discoveryInterval = discoveryInterval ?? 5e3;
+    this.onFallbackToCloudCallback = onFallbackToCloud;
   }
   static async create(dbName, config) {
-    const db = new _SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval);
+    const db = new _SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval, config.onFallbackToCloud);
     await db.init();
     return db;
   }
@@ -18858,36 +18867,81 @@ var SyncableDatabase = class _SyncableDatabase {
     const { Peer } = await Promise.resolve().then(() => (init_bundler(), bundler_exports));
     const uniqueId = crypto.randomUUID().slice(0, 8);
     const peerIdWithPrefix = `${this.dbName}-${uniqueId}`;
-    const peerOptions = {
-      // Use Google STUN servers as fallback ICE servers
-      config: {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" }
-        ]
-      }
+    const connectPeer = (options, serverConfig) => {
+      return new Promise((resolve, reject) => {
+        const peer = new Peer(peerIdWithPrefix, options);
+        let connected = false;
+        const timeout = setTimeout(() => {
+          if (!connected) {
+            peer.destroy();
+            reject(new Error("Connection timeout"));
+          }
+        }, PEER_CONNECTION_TIMEOUT);
+        peer.on("open", (id) => {
+          connected = true;
+          clearTimeout(timeout);
+          this.peerId = id;
+          this.peer = peer;
+          this.activeServerConfig = serverConfig;
+          resolve();
+        });
+        peer.on("connection", (conn) => {
+          this.handleIncomingConnection(conn);
+        });
+        peer.on("error", (err) => {
+          clearTimeout(timeout);
+          if (!connected) {
+            peer.destroy();
+            reject(err);
+          } else {
+            console.error("Peer error:", err);
+          }
+        });
+      });
     };
-    if (this.peerServerConfig) {
-      if (this.peerServerConfig.host) peerOptions.host = this.peerServerConfig.host;
-      if (this.peerServerConfig.port) peerOptions.port = this.peerServerConfig.port;
-      if (this.peerServerConfig.path) peerOptions.path = this.peerServerConfig.path;
-      if (this.peerServerConfig.secure !== void 0) peerOptions.secure = this.peerServerConfig.secure;
+    const hasUserConfig = this.peerServerConfig && (this.peerServerConfig.host || this.peerServerConfig.port || this.peerServerConfig.path);
+    if (hasUserConfig) {
+      const userServerConfig = {
+        host: this.peerServerConfig.host || PEERJS_CLOUD_HOST,
+        port: this.peerServerConfig.port || PEERJS_CLOUD_PORT,
+        path: this.peerServerConfig.path || PEERJS_CLOUD_PATH,
+        secure: this.peerServerConfig.secure ?? PEERJS_CLOUD_SECURE
+      };
+      const userPeerOptions = {
+        host: userServerConfig.host,
+        port: userServerConfig.port,
+        path: userServerConfig.path,
+        secure: userServerConfig.secure
+      };
+      try {
+        await connectPeer(userPeerOptions, userServerConfig);
+        console.log(`[SyncableDatabase] Connected to peer server: ${userServerConfig.host}:${userServerConfig.port}`);
+        return;
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        console.warn(`[SyncableDatabase] Failed to connect to user peer server (${userServerConfig.host}:${userServerConfig.port}): ${errorMessage}`);
+        if (this.peerServerConfig?.fallbackToCloud) {
+          console.log("[SyncableDatabase] Falling back to PeerJS cloud server...");
+          if (this.onFallbackToCloudCallback) {
+            try {
+              this.onFallbackToCloudCallback(errorMessage);
+            } catch (e) {
+              console.error("Fallback callback error:", e);
+            }
+          }
+        } else {
+          throw err;
+        }
+      }
     }
-    await new Promise((resolve, reject) => {
-      const peer = new Peer(peerIdWithPrefix, peerOptions);
-      peer.on("open", (id) => {
-        this.peerId = id;
-        this.peer = peer;
-        resolve();
-      });
-      peer.on("connection", (conn) => {
-        this.handleIncomingConnection(conn);
-      });
-      peer.on("error", (err) => {
-        console.error("Peer error:", err);
-        reject(err);
-      });
-    });
+    const cloudServerConfig = {
+      host: PEERJS_CLOUD_HOST,
+      port: PEERJS_CLOUD_PORT,
+      path: PEERJS_CLOUD_PATH,
+      secure: PEERJS_CLOUD_SECURE
+    };
+    await connectPeer({}, cloudServerConfig);
+    console.log("[SyncableDatabase] Connected to PeerJS cloud server");
   }
   startDiscovery() {
     this.discoveryTimer = setInterval(() => {
@@ -18900,14 +18954,12 @@ var SyncableDatabase = class _SyncableDatabase {
     });
   }
   async discoverPeers() {
-    if (this.mode !== "syncing" || !this.peerServerConfig) {
+    if (this.mode !== "syncing" || !this.activeServerConfig) {
       return;
     }
     try {
-      const protocol = this.peerServerConfig.secure ? "https" : "http";
-      const host = this.peerServerConfig.host || "localhost";
-      const port = this.peerServerConfig.port || 9e3;
-      const path = this.peerServerConfig.path || "/";
+      const { host, port, path, secure } = this.activeServerConfig;
+      const protocol = secure ? "https" : "http";
       const url = `${protocol}://${host}:${port}${path}peerjs/peers`;
       const response = await fetch(url);
       if (!response.ok) {

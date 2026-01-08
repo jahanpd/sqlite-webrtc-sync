@@ -13,7 +13,7 @@ import type { DatabaseContextValue, DatabaseProviderProps } from './types';
  * </DatabaseProvider>
  * ```
  */
-export declare function DatabaseProvider<S extends SchemaDef>({ name, schema, mode, peerServer, discoveryInterval, children, }: DatabaseProviderProps<S>): React.ReactElement | null;
+export declare function DatabaseProvider<S extends SchemaDef>({ name, schema, mode, peerServer, discoveryInterval, onFallbackToCloud, children, }: DatabaseProviderProps<S>): React.ReactElement | null;
 /**
  * Get the database context for a specific database name.
  * Used internally by hooks.
