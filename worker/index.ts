@@ -149,7 +149,7 @@ interface QueryResult {
 function execute(db: any, sql: string, params?: unknown[]): QueryResult {
   const stmt = db.prepare(sql);
   
-  if (params) {
+  if (params && params.length > 0) {
     stmt.bind(params);
   }
   
@@ -225,26 +225,46 @@ function injectColumns(sql: string): { sql: string; hasUserColumns: boolean } {
   return { sql: newSql, hasUserColumns: false };
 }
 
-function rewriteInsert(sql: string, tableName: string): { sql: string; params: unknown[]; rowId: string } {
+function rewriteInsert(sql: string, tableName: string, params?: unknown[]): { sql: string; params: unknown[]; rowId: string } {
   const insertMatch = sql.match(/INSERT\s+INTO\s+["`]?(\w+)["`]?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i);
   
   if (!insertMatch) {
-    return { sql, params: [], rowId: '' };
+    return { sql, params: params || [], rowId: '' };
   }
   
   const originalColumns = insertMatch[2].split(',').map(c => c.trim());
-  const values = insertMatch[3].split(',').map(c => c.trim());
+  const valuesStr = insertMatch[3].split(',').map(c => c.trim());
   
   const userColumns: string[] = [];
-  const userValues: string[] = [];
+  const userValues: string[] = [];  // For SQL literals or ? placeholders
+  const userParams: unknown[] = [];  // For actual parameter values
+  let paramIndex = 0;
   
   for (let i = 0; i < originalColumns.length; i++) {
     const col = originalColumns[i];
+    const val = valuesStr[i];
+    const isPlaceholder = val === '?';
+    
     if (!col.toLowerCase().includes('id') && 
         !col.toLowerCase().includes('updated_at') && 
         !col.toLowerCase().includes('deleted')) {
       userColumns.push(col);
-      userValues.push(values[i]);
+      
+      if (isPlaceholder) {
+        // Keep placeholder in SQL and track the param value
+        userValues.push('?');
+        if (params && paramIndex < params.length) {
+          userParams.push(params[paramIndex]);
+        }
+      } else {
+        // Literal value - keep it as-is in the SQL (no param needed)
+        userValues.push(val);
+      }
+    }
+    
+    // Advance param index for each placeholder we encounter
+    if (isPlaceholder) {
+      paramIndex++;
     }
   }
   
@@ -252,54 +272,87 @@ function rewriteInsert(sql: string, tableName: string): { sql: string; params: u
   const timestamp = Date.now();
   
   const newColumns = [...userColumns, 'id', 'updated_at', 'deleted'].join(', ');
-  const newValues = [...userValues, `'${uuid}'`, String(timestamp), '0'].join(', ');
+  // System columns always use placeholders
+  const allValues = [...userValues, '?', '?', '?'].join(', ');
   
-  const newSql = `INSERT INTO ${tableName} (${newColumns}) VALUES (${newValues})`;
+  const newSql = `INSERT INTO ${tableName} (${newColumns}) VALUES (${allValues})`;
+  // Params: user params followed by system values
+  const newParams = [...userParams, uuid, timestamp, 0];
   
-  return { sql: newSql, params: [], rowId: uuid };
+  return { sql: newSql, params: newParams, rowId: uuid };
 }
 
-function rewriteUpdate(sql: string, tableName: string): { sql: string; params: unknown[] } {
-  const updateMatch = sql.match(/UPDATE\s+["`]?(\w+)["`]?\s+SET\s+([^W]+)(?:\s+WHERE\s+(.+))?/i);
+function rewriteUpdate(sql: string, tableName: string, params?: unknown[]): { sql: string; params: unknown[] } {
+  const updateMatch = sql.match(/UPDATE\s+["`]?(\w+)["`]?\s+SET\s+(.+?)(?:\s+WHERE\s+(.+))?$/i);
   
   if (!updateMatch) {
-    return { sql, params: [] };
+    return { sql, params: params || [] };
   }
   
   const setClause = updateMatch[2].trim();
-  const whereClause = updateMatch[3] ? ` WHERE ${updateMatch[3]}` : '';
+  const whereClause = updateMatch[3] || '';
   const timestamp = Date.now();
   
+  // Parse SET clause to handle col = ? patterns
   const setParts = setClause.split(',').map(part => part.trim());
   const filteredParts: string[] = [];
+  const setParams: unknown[] = [];
+  const whereParams: unknown[] = [];
+  let paramIndex = 0;
   
   for (const part of setParts) {
-    const col = part.split('=')[0].trim().toLowerCase();
+    const eqIndex = part.indexOf('=');
+    if (eqIndex === -1) continue;
+    
+    const col = part.substring(0, eqIndex).trim().toLowerCase();
+    const val = part.substring(eqIndex + 1).trim();
+    const isPlaceholder = val === '?';
+    
     if (!col.includes('id') && !col.includes('updated_at') && !col.includes('deleted')) {
       filteredParts.push(part);
+      if (isPlaceholder && params) {
+        setParams.push(params[paramIndex]);
+      }
+    }
+    
+    if (isPlaceholder) {
+      paramIndex++;
     }
   }
   
-  const newSetClause = [...filteredParts, `updated_at = ${timestamp}`].join(', ');
+  // Collect WHERE clause params
+  if (whereClause && params) {
+    const wherePlaceholders = (whereClause.match(/\?/g) || []).length;
+    for (let i = 0; i < wherePlaceholders && paramIndex < params.length; i++) {
+      whereParams.push(params[paramIndex]);
+      paramIndex++;
+    }
+  }
   
-  const newSql = `UPDATE ${tableName} SET ${newSetClause}${whereClause}`;
+  const newSetClause = [...filteredParts, `updated_at = ?`].join(', ');
+  // Final params order: SET params, timestamp, WHERE params
+  const finalParams = [...setParams, timestamp, ...whereParams];
   
-  return { sql: newSql, params: [] };
+  const newSql = `UPDATE ${tableName} SET ${newSetClause}${whereClause ? ` WHERE ${whereClause}` : ''}`;
+  
+  return { sql: newSql, params: finalParams };
 }
 
-function rewriteDelete(sql: string, tableName: string): { sql: string; params: unknown[] } {
+function rewriteDelete(sql: string, tableName: string, params?: unknown[]): { sql: string; params: unknown[] } {
   const deleteMatch = sql.match(/DELETE\s+FROM\s+["`]?(\w+)["`]?\s*(?:WHERE\s+(.+))?/i);
   
   if (!deleteMatch) {
-    return { sql, params: [] };
+    return { sql, params: params || [] };
   }
   
   const timestamp = Date.now();
-  const whereClause = deleteMatch[2] ? `WHERE ${deleteMatch[2]}` : '';
+  const whereClause = deleteMatch[2] || '';
   
-  const newSql = `UPDATE ${tableName} SET deleted = 1, updated_at = ${timestamp} ${whereClause}`;
+  // Use parameterized timestamp, then pass through WHERE params
+  const newSql = `UPDATE ${tableName} SET deleted = 1, updated_at = ?${whereClause ? ` WHERE ${whereClause}` : ''}`;
+  const newParams = [timestamp, ...(params || [])];
   
-  return { sql: newSql, params: [] };
+  return { sql: newSql, params: newParams };
 }
 
 function rewriteQuery(sql: string): string {
@@ -338,13 +391,13 @@ interface ProcessedSql {
   isMutation: boolean;
 }
 
-function processSql(sql: string): ProcessedSql {
+function processSql(sql: string, params?: unknown[]): ProcessedSql {
   const upperSql = sql.toUpperCase().trim();
   
   if (upperSql.startsWith('INSERT')) {
     const insertMatch = sql.match(/INSERT\s+INTO\s+["`]?(\w+)["`]?/i);
     if (insertMatch) {
-      const result = rewriteInsert(sql, insertMatch[1]);
+      const result = rewriteInsert(sql, insertMatch[1], params);
       return { 
         sql: result.sql, 
         params: result.params, 
@@ -358,7 +411,7 @@ function processSql(sql: string): ProcessedSql {
   if (upperSql.startsWith('UPDATE')) {
     const updateMatch = sql.match(/UPDATE\s+["`]?(\w+)["`]?/i);
     if (updateMatch) {
-      const result = rewriteUpdate(sql, updateMatch[1]);
+      const result = rewriteUpdate(sql, updateMatch[1], params);
       return { 
         sql: result.sql, 
         params: result.params, 
@@ -371,7 +424,7 @@ function processSql(sql: string): ProcessedSql {
   if (upperSql.startsWith('DELETE')) {
     const deleteMatch = sql.match(/DELETE\s+FROM\s+["`]?(\w+)["`]?/i);
     if (deleteMatch) {
-      const result = rewriteDelete(sql, deleteMatch[1]);
+      const result = rewriteDelete(sql, deleteMatch[1], params);
       return { 
         sql: result.sql, 
         params: result.params, 
@@ -381,7 +434,7 @@ function processSql(sql: string): ProcessedSql {
     }
   }
   
-  return { sql: rewriteQuery(sql), params: [], isMutation: false };
+  return { sql: rewriteQuery(sql), params: params || [], isMutation: false };
 }
 
 async function mergeDatabasesAsync(localDb: any, remoteData: Uint8Array, sqlite3Module: any): Promise<void> {
@@ -521,7 +574,7 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
           lastAffectedRows.set(dbName, []);
           result = { rows: [], columns: [], affectedRows: [] };
         } else {
-          const processed = processSql(sql);
+          const processed = processSql(sql, params);
           lastProcessedSql.set(dbName, processed.sql);
           
           if (processed.isMutation && processed.table) {
@@ -532,12 +585,13 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
               // INSERT - we have the new row ID
               affectedIds = [processed.rowId];
             } else {
-              // UPDATE/DELETE - query for affected IDs first
+              // UPDATE/DELETE - query for affected IDs first using original params for WHERE clause
               const whereMatch = sql.match(/WHERE\s+(.+)$/i);
               if (whereMatch) {
                 const selectSql = `SELECT id FROM ${processed.table} WHERE ${whereMatch[1]}`;
                 try {
-                  const idsResult = execute(db, selectSql);
+                  // For the SELECT query, we need the WHERE params (last param for UPDATE, all params for DELETE)
+                  const idsResult = execute(db, selectSql, params);
                   affectedIds = idsResult.rows.map((r: any) => r.id).filter(Boolean);
                 } catch (e) {
                   // Ignore errors finding affected rows
@@ -545,8 +599,8 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
               }
             }
             
-            // Execute the mutation
-            const execResult = execute(db, processed.sql, params);
+            // Execute the mutation with the processed params
+            const execResult = execute(db, processed.sql, processed.params);
             
             // Set affected rows
             const affectedRows = affectedIds.map(id => ({ id, table: processed.table! }));
@@ -556,7 +610,7 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
           } else {
             // SELECT query
             lastAffectedRows.set(dbName, []);
-            result = execute(db, processed.sql, params);
+            result = execute(db, processed.sql, processed.params);
           }
         }
         break;

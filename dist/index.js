@@ -11676,7 +11676,7 @@ function initializeSchema(db) {
 }
 function execute(db, sql, params) {
   const stmt = db.prepare(sql);
-  if (params) {
+  if (params && params.length > 0) {
     stmt.bind(params);
   }
   const rows = [];
@@ -11733,58 +11733,95 @@ function injectColumns(sql) {
   const newSql = \`CREATE TABLE \${ifNotExistsStr}\${tableName} (\${cleanColumns}, \${systemColumns})\`;
   return { sql: newSql, hasUserColumns: false };
 }
-function rewriteInsert(sql, tableName) {
+function rewriteInsert(sql, tableName, params) {
   const insertMatch = sql.match(/INSERT\\s+INTO\\s+["\`]?(\\w+)["\`]?\\s*\\(([^)]+)\\)\\s*VALUES\\s*\\(([^)]+)\\)/i);
   if (!insertMatch) {
-    return { sql, params: [], rowId: "" };
+    return { sql, params: params || [], rowId: "" };
   }
   const originalColumns = insertMatch[2].split(",").map((c) => c.trim());
-  const values = insertMatch[3].split(",").map((c) => c.trim());
+  const valuesStr = insertMatch[3].split(",").map((c) => c.trim());
   const userColumns = [];
   const userValues = [];
+  const userParams = [];
+  let paramIndex = 0;
   for (let i = 0; i < originalColumns.length; i++) {
     const col = originalColumns[i];
+    const val = valuesStr[i];
+    const isPlaceholder = val === "?";
     if (!col.toLowerCase().includes("id") && !col.toLowerCase().includes("updated_at") && !col.toLowerCase().includes("deleted")) {
       userColumns.push(col);
-      userValues.push(values[i]);
+      if (isPlaceholder) {
+        userValues.push("?");
+        if (params && paramIndex < params.length) {
+          userParams.push(params[paramIndex]);
+        }
+      } else {
+        userValues.push(val);
+      }
+    }
+    if (isPlaceholder) {
+      paramIndex++;
     }
   }
   const uuid = crypto.randomUUID();
   const timestamp = Date.now();
   const newColumns = [...userColumns, "id", "updated_at", "deleted"].join(", ");
-  const newValues = [...userValues, \`'\${uuid}'\`, String(timestamp), "0"].join(", ");
-  const newSql = \`INSERT INTO \${tableName} (\${newColumns}) VALUES (\${newValues})\`;
-  return { sql: newSql, params: [], rowId: uuid };
+  const allValues = [...userValues, "?", "?", "?"].join(", ");
+  const newSql = \`INSERT INTO \${tableName} (\${newColumns}) VALUES (\${allValues})\`;
+  const newParams = [...userParams, uuid, timestamp, 0];
+  return { sql: newSql, params: newParams, rowId: uuid };
 }
-function rewriteUpdate(sql, tableName) {
-  const updateMatch = sql.match(/UPDATE\\s+["\`]?(\\w+)["\`]?\\s+SET\\s+([^W]+)(?:\\s+WHERE\\s+(.+))?/i);
+function rewriteUpdate(sql, tableName, params) {
+  const updateMatch = sql.match(/UPDATE\\s+["\`]?(\\w+)["\`]?\\s+SET\\s+(.+?)(?:\\s+WHERE\\s+(.+))?$/i);
   if (!updateMatch) {
-    return { sql, params: [] };
+    return { sql, params: params || [] };
   }
   const setClause = updateMatch[2].trim();
-  const whereClause = updateMatch[3] ? \` WHERE \${updateMatch[3]}\` : "";
+  const whereClause = updateMatch[3] || "";
   const timestamp = Date.now();
   const setParts = setClause.split(",").map((part) => part.trim());
   const filteredParts = [];
+  const setParams = [];
+  const whereParams = [];
+  let paramIndex = 0;
   for (const part of setParts) {
-    const col = part.split("=")[0].trim().toLowerCase();
+    const eqIndex = part.indexOf("=");
+    if (eqIndex === -1) continue;
+    const col = part.substring(0, eqIndex).trim().toLowerCase();
+    const val = part.substring(eqIndex + 1).trim();
+    const isPlaceholder = val === "?";
     if (!col.includes("id") && !col.includes("updated_at") && !col.includes("deleted")) {
       filteredParts.push(part);
+      if (isPlaceholder && params) {
+        setParams.push(params[paramIndex]);
+      }
+    }
+    if (isPlaceholder) {
+      paramIndex++;
     }
   }
-  const newSetClause = [...filteredParts, \`updated_at = \${timestamp}\`].join(", ");
-  const newSql = \`UPDATE \${tableName} SET \${newSetClause}\${whereClause}\`;
-  return { sql: newSql, params: [] };
+  if (whereClause && params) {
+    const wherePlaceholders = (whereClause.match(/\\?/g) || []).length;
+    for (let i = 0; i < wherePlaceholders && paramIndex < params.length; i++) {
+      whereParams.push(params[paramIndex]);
+      paramIndex++;
+    }
+  }
+  const newSetClause = [...filteredParts, \`updated_at = ?\`].join(", ");
+  const finalParams = [...setParams, timestamp, ...whereParams];
+  const newSql = \`UPDATE \${tableName} SET \${newSetClause}\${whereClause ? \` WHERE \${whereClause}\` : ""}\`;
+  return { sql: newSql, params: finalParams };
 }
-function rewriteDelete(sql, tableName) {
+function rewriteDelete(sql, tableName, params) {
   const deleteMatch = sql.match(/DELETE\\s+FROM\\s+["\`]?(\\w+)["\`]?\\s*(?:WHERE\\s+(.+))?/i);
   if (!deleteMatch) {
-    return { sql, params: [] };
+    return { sql, params: params || [] };
   }
   const timestamp = Date.now();
-  const whereClause = deleteMatch[2] ? \`WHERE \${deleteMatch[2]}\` : "";
-  const newSql = \`UPDATE \${tableName} SET deleted = 1, updated_at = \${timestamp} \${whereClause}\`;
-  return { sql: newSql, params: [] };
+  const whereClause = deleteMatch[2] || "";
+  const newSql = \`UPDATE \${tableName} SET deleted = 1, updated_at = ?\${whereClause ? \` WHERE \${whereClause}\` : ""}\`;
+  const newParams = [timestamp, ...params || []];
+  return { sql: newSql, params: newParams };
 }
 function rewriteQuery(sql) {
   if (sql.trim().toUpperCase().startsWith("DELETE")) {
@@ -11804,12 +11841,12 @@ function rewriteQuery(sql) {
     return sql + " WHERE deleted = 0";
   }
 }
-function processSql(sql) {
+function processSql(sql, params) {
   const upperSql = sql.toUpperCase().trim();
   if (upperSql.startsWith("INSERT")) {
     const insertMatch = sql.match(/INSERT\\s+INTO\\s+["\`]?(\\w+)["\`]?/i);
     if (insertMatch) {
-      const result = rewriteInsert(sql, insertMatch[1]);
+      const result = rewriteInsert(sql, insertMatch[1], params);
       return {
         sql: result.sql,
         params: result.params,
@@ -11822,7 +11859,7 @@ function processSql(sql) {
   if (upperSql.startsWith("UPDATE")) {
     const updateMatch = sql.match(/UPDATE\\s+["\`]?(\\w+)["\`]?/i);
     if (updateMatch) {
-      const result = rewriteUpdate(sql, updateMatch[1]);
+      const result = rewriteUpdate(sql, updateMatch[1], params);
       return {
         sql: result.sql,
         params: result.params,
@@ -11834,7 +11871,7 @@ function processSql(sql) {
   if (upperSql.startsWith("DELETE")) {
     const deleteMatch = sql.match(/DELETE\\s+FROM\\s+["\`]?(\\w+)["\`]?/i);
     if (deleteMatch) {
-      const result = rewriteDelete(sql, deleteMatch[1]);
+      const result = rewriteDelete(sql, deleteMatch[1], params);
       return {
         sql: result.sql,
         params: result.params,
@@ -11843,7 +11880,7 @@ function processSql(sql) {
       };
     }
   }
-  return { sql: rewriteQuery(sql), params: [], isMutation: false };
+  return { sql: rewriteQuery(sql), params: params || [], isMutation: false };
 }
 async function mergeDatabasesAsync(localDb, remoteData, sqlite3Module) {
   const tempDb = new sqlite3Module.oo1.DB(":memory:");
@@ -11950,7 +11987,7 @@ async function handleRequest(request) {
           lastAffectedRows.set(dbName, []);
           result = { rows: [], columns: [], affectedRows: [] };
         } else {
-          const processed = processSql(sql);
+          const processed = processSql(sql, params);
           lastProcessedSql.set(dbName, processed.sql);
           if (processed.isMutation && processed.table) {
             let affectedIds = [];
@@ -11961,19 +11998,19 @@ async function handleRequest(request) {
               if (whereMatch) {
                 const selectSql = \`SELECT id FROM \${processed.table} WHERE \${whereMatch[1]}\`;
                 try {
-                  const idsResult = execute(db, selectSql);
+                  const idsResult = execute(db, selectSql, params);
                   affectedIds = idsResult.rows.map((r) => r.id).filter(Boolean);
                 } catch (e) {
                 }
               }
             }
-            const execResult = execute(db, processed.sql, params);
+            const execResult = execute(db, processed.sql, processed.params);
             const affectedRows = affectedIds.map((id2) => ({ id: id2, table: processed.table }));
             lastAffectedRows.set(dbName, affectedRows);
             result = { ...execResult, affectedRows };
           } else {
             lastAffectedRows.set(dbName, []);
-            result = execute(db, processed.sql, params);
+            result = execute(db, processed.sql, processed.params);
           }
         }
         break;
