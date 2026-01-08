@@ -11981,11 +11981,31 @@ async function handleRequest(request) {
         result = Array.from(exportDatabase(db));
         break;
       }
+      case "exportBinary": {
+        const db = databases.get(dbName);
+        if (!db) throw new Error(\`Database \${dbName} not found\`);
+        const binaryData = sqlite3.capi.sqlite3_js_db_export(db.pointer);
+        result = Array.from(binaryData);
+        break;
+      }
       case "import": {
         const db = databases.get(dbName);
         if (!db) throw new Error(\`Database \${dbName} not found\`);
         const data = new Uint8Array(args[0]);
         await importDatabase(db, data);
+        result = { success: true };
+        break;
+      }
+      case "importBinary": {
+        const db = databases.get(dbName);
+        if (!db) throw new Error(\`Database \${dbName} not found\`);
+        const data = new Uint8Array(args[0]);
+        const pData = sqlite3.wasm.allocFromTypedArray(data);
+        try {
+          sqlite3.capi.sqlite3_deserialize(db.pointer, "main", pData, data.length, data.length, 0);
+        } finally {
+          sqlite3.wasm.dealloc(pData);
+        }
         result = { success: true };
         break;
       }

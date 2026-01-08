@@ -12021,11 +12021,31 @@ async function handleRequest(request) {
         result = Array.from(exportDatabase(db));
         break;
       }
+      case "exportBinary": {
+        const db = databases.get(dbName);
+        if (!db) throw new Error(\`Database \${dbName} not found\`);
+        const binaryData = sqlite3.capi.sqlite3_js_db_export(db.pointer);
+        result = Array.from(binaryData);
+        break;
+      }
       case "import": {
         const db = databases.get(dbName);
         if (!db) throw new Error(\`Database \${dbName} not found\`);
         const data = new Uint8Array(args[0]);
         await importDatabase(db, data);
+        result = { success: true };
+        break;
+      }
+      case "importBinary": {
+        const db = databases.get(dbName);
+        if (!db) throw new Error(\`Database \${dbName} not found\`);
+        const data = new Uint8Array(args[0]);
+        const pData = sqlite3.wasm.allocFromTypedArray(data);
+        try {
+          sqlite3.capi.sqlite3_deserialize(db.pointer, "main", pData, data.length, data.length, 0);
+        } finally {
+          sqlite3.wasm.dealloc(pData);
+        }
         result = { success: true };
         break;
       }
@@ -18910,11 +18930,39 @@ var SyncableDatabase = class _SyncableDatabase {
     const data = await this.sendRequest("export", this.dbName, []);
     return new Uint8Array(data);
   }
+  async exportBinary() {
+    if (!this.isInitialized) {
+      throw new Error("Database not initialized");
+    }
+    const data = await this.sendRequest("exportBinary", this.dbName, []);
+    return new Uint8Array(data);
+  }
+  async saveToFile(filename) {
+    if (typeof document === "undefined") {
+      throw new Error("saveToFile is only available in browser environments");
+    }
+    const data = await this.exportBinary();
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+    const actualFilename = filename ?? `${this.dbName}-${timestamp}.sqlite`;
+    const blob = new Blob([data.buffer], { type: "application/x-sqlite3" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = actualFilename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
   async import(data) {
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
     await this.sendRequest("import", this.dbName, [Array.from(data)]);
+  }
+  async importBinary(data) {
+    if (!this.isInitialized) {
+      throw new Error("Database not initialized");
+    }
+    await this.sendRequest("importBinary", this.dbName, [Array.from(data)]);
   }
   async connectToPeer(peerId) {
     if (this.mode !== "syncing") {

@@ -350,11 +350,42 @@ export class SyncableDatabase {
     return new Uint8Array(data);
   }
 
+  async exportBinary(): Promise<Uint8Array> {
+    if (!this.isInitialized) {
+      throw new Error('Database not initialized');
+    }
+    const data = await this.sendRequest('exportBinary', this.dbName, []) as number[];
+    return new Uint8Array(data);
+  }
+
+  async saveToFile(filename?: string): Promise<void> {
+    if (typeof document === 'undefined') {
+      throw new Error('saveToFile is only available in browser environments');
+    }
+    const data = await this.exportBinary();
+    const timestamp = new Date().toISOString().split('T')[0];
+    const actualFilename = filename ?? `${this.dbName}-${timestamp}.sqlite`;
+    const blob = new Blob([data.buffer as ArrayBuffer], { type: 'application/x-sqlite3' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = actualFilename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   async import(data: Uint8Array): Promise<void> {
     if (!this.isInitialized) {
       throw new Error('Database not initialized');
     }
     await this.sendRequest('import', this.dbName, [Array.from(data)]);
+  }
+
+  async importBinary(data: Uint8Array): Promise<void> {
+    if (!this.isInitialized) {
+      throw new Error('Database not initialized');
+    }
+    await this.sendRequest('importBinary', this.dbName, [Array.from(data)]);
   }
 
   async connectToPeer(peerId: string): Promise<void> {

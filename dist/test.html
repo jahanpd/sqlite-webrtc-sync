@@ -180,27 +180,47 @@
         log('  PASS', 'pass');
         passed++;
 
-        // Test 9: Multiple databases
-        log('Test 9: Multiple databases');
-        const timestamp = Date.now();
-        const db9a = await createDatabase('multi-1-' + timestamp, { mode: 'local' });
-        const db9b = await createDatabase('multi-2-' + timestamp, { mode: 'local' });
-        const db9c = await createDatabase('multi-3-' + timestamp, { mode: 'local' });
-        await db9a.exec('CREATE TABLE t1 (data TEXT)');
-        await db9b.exec('CREATE TABLE t2 (data TEXT)');
-        await db9c.exec('CREATE TABLE t3 (data TEXT)');
-        await db9a.exec("INSERT INTO t1 (data) VALUES ('from-db9a')");
-        await db9b.exec("INSERT INTO t2 (data) VALUES ('from-db9b')");
-        await db9c.exec("INSERT INTO t3 (data) VALUES ('from-db9c')");
-        const r9a = await db9a.exec('SELECT * FROM t1');
-        const r9b = await db9b.exec('SELECT * FROM t2');
-        const r9c = await db9c.exec('SELECT * FROM t3');
-        assert(r9a.rows.length === 1, 'db9a should have 1 row');
-        assert(r9b.rows.length === 1, 'db9b should have 1 row');
-        assert(r9c.rows.length === 1, 'db9c should have 1 row');
+        // Test 9: Binary export and import
+        log('Test 9: Binary export and import database');
+        const db9a = await createDatabase('test-binary-export-1-' + Date.now(), { mode: 'local' });
+        const db9b = await createDatabase('test-binary-export-2-' + Date.now(), { mode: 'local' });
+        await db9a.exec('CREATE TABLE items (name TEXT, value INTEGER)');
+        await db9a.exec("INSERT INTO items (name, value) VALUES ('binary-test', 42)");
+        const binaryExported = await db9a.exportBinary();
+        assert(binaryExported instanceof Uint8Array, 'exportBinary should return Uint8Array');
+        assert(binaryExported.length > 0, 'Binary export should not be empty');
+        assert(binaryExported[0] === 83 && binaryExported[1] === 81 && binaryExported[2] === 76, 'Binary should start with "SQL"');
+        await db9b.importBinary(binaryExported);
+        const result9 = await db9b.exec('SELECT * FROM items');
+        assert(result9.rows.length === 1, 'Should have 1 row after binary import');
+        assert(getRow(result9.rows[0]).name === 'binary-test', 'Should have correct name');
+        assert(getRow(result9.rows[0]).value === 42, 'Should have correct value');
         await db9a.close();
         await db9b.close();
-        await db9c.close();
+        log('  PASS', 'pass');
+        passed++;
+
+        // Test 10: Multiple databases
+        log('Test 10: Multiple databases');
+        const timestamp = Date.now();
+        const db10a = await createDatabase('multi-1-' + timestamp, { mode: 'local' });
+        const db10b = await createDatabase('multi-2-' + timestamp, { mode: 'local' });
+        const db10c = await createDatabase('multi-3-' + timestamp, { mode: 'local' });
+        await db10a.exec('CREATE TABLE t1 (data TEXT)');
+        await db10b.exec('CREATE TABLE t2 (data TEXT)');
+        await db10c.exec('CREATE TABLE t3 (data TEXT)');
+        await db10a.exec("INSERT INTO t1 (data) VALUES ('from-db10a')");
+        await db10b.exec("INSERT INTO t2 (data) VALUES ('from-db10b')");
+        await db10c.exec("INSERT INTO t3 (data) VALUES ('from-db10c')");
+        const r10a = await db10a.exec('SELECT * FROM t1');
+        const r10b = await db10b.exec('SELECT * FROM t2');
+        const r10c = await db10c.exec('SELECT * FROM t3');
+        assert(r10a.rows.length === 1, 'db10a should have 1 row');
+        assert(r10b.rows.length === 1, 'db10b should have 1 row');
+        assert(r10c.rows.length === 1, 'db10c should have 1 row');
+        await db10a.close();
+        await db10b.close();
+        await db10c.close();
         log('  PASS', 'pass');
         passed++;
 

@@ -63,7 +63,10 @@ export declare class SyncableDatabase {
     private broadcastOperation;
     applyRemoteOperation(operation: SyncOperation): Promise<void>;
     export(): Promise<Uint8Array>;
+    exportBinary(): Promise<Uint8Array>;
+    saveToFile(filename?: string): Promise<void>;
     import(data: Uint8Array): Promise<void>;
+    importBinary(data: Uint8Array): Promise<void>;
     connectToPeer(peerId: string): Promise<void>;
     disconnectFromPeer(peerId: string): Promise<void>;
     exportToPeer(peerId: string): Promise<void>;

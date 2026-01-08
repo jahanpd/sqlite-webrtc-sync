@@ -575,6 +575,7 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
           result = { rows: [], columns: [], affectedRows: [] };
         } else {
           const processed = processSql(sql, params);
+					console.log(`[SQL QUERY] ${processed.sql}`)
           lastProcessedSql.set(dbName, processed.sql);
           
           if (processed.isMutation && processed.table) {
@@ -622,7 +623,15 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
         result = Array.from(exportDatabase(db));
         break;
       }
-      
+
+      case 'exportBinary': {
+        const db = databases.get(dbName);
+        if (!db) throw new Error(`Database ${dbName} not found`);
+        const binaryData = sqlite3.capi.sqlite3_js_db_export(db.pointer);
+        result = Array.from(binaryData);
+        break;
+      }
+
       case 'import': {
         const db = databases.get(dbName);
         if (!db) throw new Error(`Database ${dbName} not found`);
@@ -631,7 +640,21 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
         result = { success: true };
         break;
       }
-      
+
+      case 'importBinary': {
+        const db = databases.get(dbName);
+        if (!db) throw new Error(`Database ${dbName} not found`);
+        const data = new Uint8Array(args[0] as number[]);
+        const pData = sqlite3.wasm.allocFromTypedArray(data);
+        try {
+          sqlite3.capi.sqlite3_deserialize(db.pointer, 'main', pData, data.length, data.length, 0);
+        } finally {
+          sqlite3.wasm.dealloc(pData);
+        }
+        result = { success: true };
+        break;
+      }
+
       case 'close': {
         const db = databases.get(dbName);
         if (db) {
