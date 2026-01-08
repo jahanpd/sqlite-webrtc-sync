@@ -196,12 +196,68 @@
       return { success: true };
     };
 
+    // Update an item's value by name
+    window.updateItem = async function(name, newValue) {
+      if (!window.dbInstance) throw new Error('Database not ready');
+      log(`Updating item: ${name} = ${newValue}`);
+      const result = await window.dbInstance.exec(
+        'UPDATE items SET value = ? WHERE name = ?',
+        [newValue, name]
+      );
+      log(`Updated item: ${name}, affectedRows: ${JSON.stringify(result.affectedRows)}`);
+      return { success: true };
+    };
+
+    // Delete an item by name (soft delete)
+    window.deleteItem = async function(name) {
+      if (!window.dbInstance) throw new Error('Database not ready');
+      log(`Deleting item: ${name}`);
+      const result = await window.dbInstance.exec(
+        'DELETE FROM items WHERE name = ?',
+        [name]
+      );
+      log(`Deleted item: ${name}, affectedRows: ${JSON.stringify(result.affectedRows)}`);
+      return { success: true };
+    };
+
+    // Get a specific item's value by name
+    window.getItemValue = async function(name) {
+      if (!window.dbInstance) throw new Error('Database not ready');
+      const result = await window.dbInstance.exec(
+        'SELECT value FROM items WHERE name = ?',
+        [name]
+      );
+      if (result.rows.length === 0) return null;
+      return result.rows[0].value;
+    };
+
+    // Wait for a specific item's value to reach a target
+    window.waitForItemValue = async function(name, targetValue, timeout = 10000) {
+      log(`Waiting for ${name} value to reach ${targetValue}...`);
+      const startTime = Date.now();
+      
+      return new Promise((resolve, reject) => {
+        const check = async () => {
+          const currentValue = await window.getItemValue(name);
+          if (currentValue === targetValue) {
+            log(`${name} value reached ${currentValue}`);
+            resolve(currentValue);
+          } else if (Date.now() - startTime > timeout) {
+            reject(new Error(`Timeout waiting for ${name} value. Current: ${currentValue}, Target: ${targetValue}`));
+          } else {
+            setTimeout(check, 100);
+          }
+        };
+        check();
+      });
+    };
+
     // Get current item count from React state
     window.getItemCount = function() {
       return window.currentItemCount;
     };
 
-    // Wait for item count to reach a specific value
+    // Wait for item count to reach at least a specific value (for INSERTs)
     window.waitForItemCount = async function(targetCount, timeout = 10000) {
       log(`Waiting for item count to reach ${targetCount}...`);
       const startTime = Date.now();
@@ -214,6 +270,27 @@
             resolve(currentCount);
           } else if (Date.now() - startTime > timeout) {
             reject(new Error(`Timeout waiting for item count. Current: ${currentCount}, Target: ${targetCount}`));
+          } else {
+            setTimeout(check, 100);
+          }
+        };
+        check();
+      });
+    };
+
+    // Wait for item count to be exactly a specific value (for DELETEs)
+    window.waitForItemCountExact = async function(targetCount, timeout = 10000) {
+      log(`Waiting for item count to be exactly ${targetCount}...`);
+      const startTime = Date.now();
+      
+      return new Promise((resolve, reject) => {
+        const check = () => {
+          const currentCount = window.currentItemCount;
+          if (currentCount === targetCount) {
+            log(`Item count is exactly ${currentCount}`);
+            resolve(currentCount);
+          } else if (Date.now() - startTime > timeout) {
+            reject(new Error(`Timeout waiting for exact item count. Current: ${currentCount}, Target: ${targetCount}`));
           } else {
             setTimeout(check, 100);
           }

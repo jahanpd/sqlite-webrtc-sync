@@ -11999,7 +11999,17 @@ async function handleRequest(request) {
               if (whereMatch) {
                 const selectSql = `SELECT id FROM ${processed.table} WHERE ${whereMatch[1]}`;
                 try {
-                  const idsResult = execute(db, selectSql, params);
+                  const wherePlaceholders = (whereMatch[1].match(/\?/g) || []).length;
+                  const isUpdate = sql.trim().toUpperCase().startsWith("UPDATE");
+                  let whereParams = [];
+                  if (params && params.length > 0) {
+                    if (isUpdate) {
+                      whereParams = params.slice(-wherePlaceholders);
+                    } else {
+                      whereParams = params;
+                    }
+                  }
+                  const idsResult = execute(db, selectSql, whereParams);
                   affectedIds = idsResult.rows.map((r) => r.id).filter(Boolean);
                 } catch (e) {
                 }

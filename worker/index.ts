@@ -649,8 +649,22 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
               if (whereMatch) {
                 const selectSql = `SELECT id FROM ${processed.table} WHERE ${whereMatch[1]}`;
                 try {
-                  // For the SELECT query, we need the WHERE params (last param for UPDATE, all params for DELETE)
-                  const idsResult = execute(db, selectSql, params);
+                  // For the SELECT query, we need only the WHERE params
+                  // Count placeholders in the WHERE clause
+                  const wherePlaceholders = (whereMatch[1].match(/\?/g) || []).length;
+                  // For UPDATE, WHERE params are the LAST ones; for DELETE, they're all of them
+                  const isUpdate = sql.trim().toUpperCase().startsWith('UPDATE');
+                  let whereParams: unknown[] = [];
+                  if (params && params.length > 0) {
+                    if (isUpdate) {
+                      // For UPDATE, WHERE params are at the end
+                      whereParams = params.slice(-wherePlaceholders);
+                    } else {
+                      // For DELETE, all params are WHERE params
+                      whereParams = params;
+                    }
+                  }
+                  const idsResult = execute(db, selectSql, whereParams);
                   affectedIds = idsResult.rows.map((r: any) => r.id).filter(Boolean);
                 } catch (e) {
                   // Ignore errors finding affected rows

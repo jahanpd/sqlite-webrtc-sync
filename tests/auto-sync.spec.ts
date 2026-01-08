@@ -936,7 +936,27 @@ test.describe('Auto-Discovery and Real-time Sync', () => {
       const countAfterSecond = await pageB.evaluate(() => (window as any).getItemCount());
       expect(countAfterSecond).toBe(2);
       
-      // === PHASE 7: Insert on B, verify A updates ===
+      // === PHASE 7: UPDATE on A, verify B's React shows new value ===
+      await pageA.evaluate(async () => {
+        await (window as any).updateItem('test-item-1', 999);
+      });
+      
+      // Wait for B to receive the updated value
+      await pageB.evaluate(async () => {
+        await (window as any).waitForItemValue('test-item-1', 999, 10000);
+      });
+      
+      // Verify B has the updated value
+      const updatedValueOnB = await pageB.evaluate(async () => {
+        return await (window as any).getItemValue('test-item-1');
+      });
+      expect(updatedValueOnB).toBe(999);
+      
+      // Verify B still shows 2 items (count unchanged, just value updated)
+      const countAfterUpdate = await pageB.evaluate(() => (window as any).getItemCount());
+      expect(countAfterUpdate).toBe(2);
+      
+      // === PHASE 8: Insert on B, verify A updates ===
       await pageB.evaluate(async () => {
         await (window as any).insertItem('from-b', 123);
       });
@@ -948,6 +968,41 @@ test.describe('Auto-Discovery and Real-time Sync', () => {
       
       const countOnA = await pageA.evaluate(() => (window as any).getItemCount());
       expect(countOnA).toBe(3);
+      
+      // === PHASE 9: DELETE on A, verify B's React shows one fewer item ===
+      await pageA.evaluate(async () => {
+        await (window as any).deleteItem('test-item-2');
+      });
+      
+      // Wait for B to show exactly 2 items (was 3, deleted 1)
+      await pageB.evaluate(async () => {
+        await (window as any).waitForItemCountExact(2, 10000);
+      });
+      
+      const countAfterDelete = await pageB.evaluate(() => (window as any).getItemCount());
+      expect(countAfterDelete).toBe(2);
+      
+      // Verify the deleted item is gone on B
+      const deletedItemValue = await pageB.evaluate(async () => {
+        return await (window as any).getItemValue('test-item-2');
+      });
+      expect(deletedItemValue).toBeNull();
+      
+      // === PHASE 10: UPDATE on B, verify A's React shows new value ===
+      await pageB.evaluate(async () => {
+        await (window as any).updateItem('from-b', 456);
+      });
+      
+      // Wait for A to receive the updated value
+      await pageA.evaluate(async () => {
+        await (window as any).waitForItemValue('from-b', 456, 10000);
+      });
+      
+      // Verify A has the updated value
+      const updatedValueOnA = await pageA.evaluate(async () => {
+        return await (window as any).getItemValue('from-b');
+      });
+      expect(updatedValueOnA).toBe(456);
       
       // Cleanup
       await pageA.evaluate(() => (window as any).closeDb());
