@@ -11747,13 +11747,18 @@ function rewriteUpdate(sql, tableName, params) {
   const setParams = [];
   const whereParams = [];
   let paramIndex = 0;
+  let hasUpdatedAt = false;
   for (const part of setParts) {
     const eqIndex = part.indexOf("=");
     if (eqIndex === -1) continue;
     const col = part.substring(0, eqIndex).trim();
+    const colLower = col.replace(/["`]/g, "").toLowerCase();
     const val = part.substring(eqIndex + 1).trim();
     const isPlaceholder = val === "?";
-    if (!isSystemColumn(col)) {
+    if (colLower === "updated_at") {
+      hasUpdatedAt = true;
+    }
+    if (colLower !== "id") {
       filteredParts.push(part);
       if (isPlaceholder && params) {
         setParams.push(params[paramIndex]);
@@ -11770,8 +11775,15 @@ function rewriteUpdate(sql, tableName, params) {
       paramIndex++;
     }
   }
-  const newSetClause = [...filteredParts, `updated_at = ?`].join(", ");
-  const finalParams = [...setParams, timestamp, ...whereParams];
+  let newSetClause;
+  let finalParams;
+  if (hasUpdatedAt) {
+    newSetClause = filteredParts.join(", ");
+    finalParams = [...setParams, ...whereParams];
+  } else {
+    newSetClause = [...filteredParts, `updated_at = ?`].join(", ");
+    finalParams = [...setParams, timestamp, ...whereParams];
+  }
   const newSql = `UPDATE ${tableName} SET ${newSetClause}${whereClause ? ` WHERE ${whereClause}` : ""}`;
   return { sql: newSql, params: finalParams };
 }

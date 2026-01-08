@@ -75,6 +75,12 @@ test.describe('Parameterized Queries (db.exec)', () => {
     // DELETE tests
     expect(resultNames).toContain('DELETE with single WHERE param');
     
+    // Soft delete tests (UPDATE deleted = 1)
+    expect(resultNames).toContain('Soft delete via UPDATE deleted = 1 with WHERE param');
+    expect(resultNames).toContain('Soft delete via UPDATE deleted = 1 with id param');
+    expect(resultNames).toContain('Soft delete with multiple SET params (deleted = 1 and other fields)');
+    expect(resultNames).toContain('Restore soft-deleted row by setting deleted = 0');
+    
     // Edge cases
     expect(resultNames).toContain('Empty params array');
     expect(resultNames).toContain('Param with special characters');

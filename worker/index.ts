@@ -307,17 +307,25 @@ function rewriteUpdate(sql: string, tableName: string, params?: unknown[]): { sq
   const setParams: unknown[] = [];
   const whereParams: unknown[] = [];
   let paramIndex = 0;
+  let hasUpdatedAt = false;
   
   for (const part of setParts) {
     const eqIndex = part.indexOf('=');
     if (eqIndex === -1) continue;
     
     const col = part.substring(0, eqIndex).trim();
+    const colLower = col.replace(/["`]/g, '').toLowerCase();
     const val = part.substring(eqIndex + 1).trim();
     const isPlaceholder = val === '?';
     
-    // Only filter out exact system columns, not columns containing system column names
-    if (!isSystemColumn(col)) {
+    // Track if user is setting updated_at explicitly
+    if (colLower === 'updated_at') {
+      hasUpdatedAt = true;
+    }
+    
+    // Only filter out 'id' (primary key shouldn't be changed)
+    // Allow 'updated_at' and 'deleted' to be set explicitly by user
+    if (colLower !== 'id') {
       filteredParts.push(part);
       if (isPlaceholder && params) {
         setParams.push(params[paramIndex]);
@@ -338,9 +346,19 @@ function rewriteUpdate(sql: string, tableName: string, params?: unknown[]): { sq
     }
   }
   
-  const newSetClause = [...filteredParts, `updated_at = ?`].join(', ');
-  // Final params order: SET params, timestamp, WHERE params
-  const finalParams = [...setParams, timestamp, ...whereParams];
+  // Only auto-add updated_at if user didn't provide it
+  let newSetClause: string;
+  let finalParams: unknown[];
+  
+  if (hasUpdatedAt) {
+    // User provided updated_at, use their value
+    newSetClause = filteredParts.join(', ');
+    finalParams = [...setParams, ...whereParams];
+  } else {
+    // Auto-add updated_at
+    newSetClause = [...filteredParts, `updated_at = ?`].join(', ');
+    finalParams = [...setParams, timestamp, ...whereParams];
+  }
   
   const newSql = `UPDATE ${tableName} SET ${newSetClause}${whereClause ? ` WHERE ${whereClause}` : ''}`;
   
