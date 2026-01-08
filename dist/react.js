@@ -19491,7 +19491,7 @@ function useQuery(dbName, tableName) {
 }
 
 // src/react/hooks/useSQL.ts
-import { useState as useState3, useEffect as useEffect3, useCallback as useCallback2, useMemo } from "react";
+import { useState as useState3, useEffect as useEffect3, useCallback as useCallback2, useMemo, useRef as useRef3 } from "react";
 function useSQL(dbName, sql, options) {
   const context = useDatabaseContext(dbName);
   const { db, store } = context ? context : { db: null, store: null };
@@ -19501,6 +19501,11 @@ function useSQL(dbName, sql, options) {
   const paramsKey = useMemo(
     () => JSON.stringify(options?.params ?? []),
     [options?.params]
+  );
+  const tablesKey = JSON.stringify(options?.tables ?? []);
+  const tables = useMemo(
+    () => options?.tables ?? [],
+    [tablesKey]
   );
   const queryKey = useMemo(
     () => generateSQLQueryKey(sql, options?.params),
@@ -19520,21 +19525,24 @@ function useSQL(dbName, sql, options) {
       setIsLoading(false);
     }
   }, [db, sql, paramsKey]);
+  const fetchDataRef = useRef3(fetchData);
+  useEffect3(() => {
+    fetchDataRef.current = fetchData;
+  });
   const refetch = useCallback2(async () => {
     await fetchData();
   }, [fetchData]);
   useEffect3(() => {
     if (!store) return;
-    fetchData();
-    const tables = options?.tables;
-    if (tables && tables.length > 0) {
+    fetchDataRef.current();
+    if (tables.length > 0) {
       const unsubscribe = store.subscribe(queryKey, tables, () => {
-        fetchData();
+        fetchDataRef.current();
       });
       return unsubscribe;
     }
     return void 0;
-  }, [fetchData, store, queryKey, options?.tables]);
+  }, [store, queryKey, tables]);
   if (!context) {
     return {
       data: void 0,

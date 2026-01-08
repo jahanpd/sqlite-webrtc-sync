@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useDatabaseContext } from '../context';
 import { generateSQLQueryKey } from '../store';
 import type { QueryResult, SQLQueryOptions } from '../types';
@@ -60,10 +60,11 @@ export function useSQL<T = Record<string, unknown>>(
     [options?.params]
   );
 
-  // Memoize tables to detect changes for reactivity (avoid infinite loops from new array references)
-  const tablesKey = useMemo(
-    () => JSON.stringify(options?.tables ?? []),
-    [options?.tables]
+  // Memoize tables array with stable reference (avoid infinite loops from new array references)
+  const tablesKey = JSON.stringify(options?.tables ?? []);
+  const tables = useMemo(
+    () => options?.tables ?? [],
+    [tablesKey]
   );
 
   // Generate query key for subscription
@@ -88,6 +89,12 @@ export function useSQL<T = Record<string, unknown>>(
       setIsLoading(false);
     }
   }, [db, sql, paramsKey]);
+
+  // Ref to always get latest fetchData without needing to resubscribe
+  const fetchDataRef = useRef(fetchData);
+  useEffect(() => {
+    fetchDataRef.current = fetchData;
+  });
   
   // Refetch function for manual refresh
   const refetch = useCallback(async () => {
@@ -96,14 +103,13 @@ export function useSQL<T = Record<string, unknown>>(
   
   // Initial fetch and subscription
   useEffect(() => {
-		if (!store) return
-    fetchData();
+    if (!store) return;
+    fetchDataRef.current();
     
     // Only subscribe if tables are specified for reactivity
-    const tables = options?.tables;
-    if (tables && tables.length > 0) {
+    if (tables.length > 0) {
       const unsubscribe = store.subscribe(queryKey, tables, () => {
-        fetchData();
+        fetchDataRef.current();
       });
       
       return unsubscribe;
@@ -111,7 +117,7 @@ export function useSQL<T = Record<string, unknown>>(
     
     // No subscription if tables not specified
     return undefined;
-  }, [fetchData, store, queryKey, tablesKey]);
+  }, [store, queryKey, tables]);
   
   if (!context) {
     return {
