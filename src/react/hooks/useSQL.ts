@@ -59,7 +59,13 @@ export function useSQL<T = Record<string, unknown>>(
     () => JSON.stringify(options?.params ?? []),
     [options?.params]
   );
-  
+
+  // Memoize tables to detect changes for reactivity (avoid infinite loops from new array references)
+  const tablesKey = useMemo(
+    () => JSON.stringify(options?.tables ?? []),
+    [options?.tables]
+  );
+
   // Generate query key for subscription
   const queryKey = useMemo(
     () => generateSQLQueryKey(sql, options?.params),
@@ -105,7 +111,7 @@ export function useSQL<T = Record<string, unknown>>(
     
     // No subscription if tables not specified
     return undefined;
-  }, [fetchData, store, queryKey, options?.tables]);
+  }, [fetchData, store, queryKey, tablesKey]);
   
   if (!context) {
     return {
