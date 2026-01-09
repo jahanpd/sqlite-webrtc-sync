@@ -310,8 +310,10 @@ function rewriteInsert(sql: string, tableName: string, params?: unknown[]): { sq
 }
 
 function rewriteUpdate(sql: string, tableName: string, params?: unknown[]): { sql: string; params: unknown[] } {
-  const updateMatch = sql.match(/UPDATE\s+["`]?(\w+)["`]?\s+SET\s+(.+?)(?:\s+WHERE\s+(.+))?$/i);
-  
+  // Trim SQL to handle trailing whitespace/newlines that break the $ anchor
+  const trimmedSql = sql.trim();
+  const updateMatch = trimmedSql.match(/UPDATE\s+["`]?(\w+)["`]?\s+SET\s+(.+?)(?:\s+WHERE\s+(.+))?$/i);
+
   if (!updateMatch) {
     return { sql, params: params || [] };
   }
