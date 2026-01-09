@@ -237,28 +237,42 @@ function isSystemColumn(col: string): boolean {
 
 function rewriteInsert(sql: string, tableName: string, params?: unknown[]): { sql: string; params: unknown[]; rowId: string } {
   const insertMatch = sql.match(/INSERT\s+INTO\s+["`]?(\w+)["`]?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i);
-  
+
   if (!insertMatch) {
     return { sql, params: params || [], rowId: '' };
   }
-  
+
   const originalColumns = insertMatch[2].split(',').map(c => c.trim());
   const valuesStr = insertMatch[3].split(',').map(c => c.trim());
-  
+
   const userColumns: string[] = [];
   const userValues: string[] = [];  // For SQL literals or ? placeholders
   const userParams: unknown[] = [];  // For actual parameter values
   let paramIndex = 0;
-  
+
+  // Check if user provided an ID
+  let userProvidedId: string | null = null;
+
   for (let i = 0; i < originalColumns.length; i++) {
     const col = originalColumns[i];
     const val = valuesStr[i];
     const isPlaceholder = val === '?';
-    
+    const colLower = col.replace(/["`]/g, '').trim().toLowerCase();
+
+    // Check if user is providing their own ID
+    if (colLower === 'id') {
+      if (isPlaceholder && params && paramIndex < params.length) {
+        userProvidedId = String(params[paramIndex]);
+      } else if (!isPlaceholder) {
+        // Literal value - strip quotes if present
+        userProvidedId = val.replace(/^['"]|['"]$/g, '');
+      }
+    }
+
     // Only filter out exact system columns, not columns containing system column names
     if (!isSystemColumn(col)) {
       userColumns.push(col);
-      
+
       if (isPlaceholder) {
         // Keep placeholder in SQL and track the param value
         userValues.push('?');
@@ -270,25 +284,29 @@ function rewriteInsert(sql: string, tableName: string, params?: unknown[]): { sq
         userValues.push(val);
       }
     }
-    
+
     // Advance param index for each placeholder we encounter
     if (isPlaceholder) {
       paramIndex++;
     }
   }
-  
-  const uuid = crypto.randomUUID();
+
+  // Use user-provided ID or generate a new one
+  const rowId = userProvidedId || crypto.randomUUID();
   const timestamp = Date.now();
-  
+
   const newColumns = [...userColumns, 'id', 'updated_at', 'deleted'].join(', ');
   // System columns always use placeholders
   const allValues = [...userValues, '?', '?', '?'].join(', ');
-  
-  const newSql = `INSERT INTO ${tableName} (${newColumns}) VALUES (${allValues})`;
+
+  // If user provided a deterministic ID, use INSERT OR IGNORE to make the operation idempotent.
+  // This prevents overwriting synced data and avoids UNIQUE constraint violations.
+  const insertType = userProvidedId ? 'INSERT OR IGNORE INTO' : 'INSERT INTO';
+  const newSql = `${insertType} ${tableName} (${newColumns}) VALUES (${allValues})`;
   // Params: user params followed by system values
-  const newParams = [...userParams, uuid, timestamp, 0];
-  
-  return { sql: newSql, params: newParams, rowId: uuid };
+  const newParams = [...userParams, rowId, timestamp, 0];
+
+  return { sql: newSql, params: newParams, rowId };
 }
 
 function rewriteUpdate(sql: string, tableName: string, params?: unknown[]): { sql: string; params: unknown[] } {
@@ -639,13 +657,15 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
           if (processed.isMutation && processed.table) {
             // For UPDATE/DELETE, we need to find affected row IDs before executing
             let affectedIds: string[] = [];
-            
+
             if (processed.rowId) {
               // INSERT - we have the new row ID
               affectedIds = [processed.rowId];
             } else {
               // UPDATE/DELETE - query for affected IDs first using original params for WHERE clause
-              const whereMatch = sql.match(/WHERE\s+(.+)$/i);
+              // Trim the SQL to handle trailing whitespace/newlines that break the regex
+              const trimmedSql = sql.trim();
+              const whereMatch = trimmedSql.match(/WHERE\s+(.+)$/i);
               if (whereMatch) {
                 const selectSql = `SELECT id FROM ${processed.table} WHERE ${whereMatch[1]}`;
                 try {
@@ -653,11 +673,11 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
                   // Count placeholders in the WHERE clause
                   const wherePlaceholders = (whereMatch[1].match(/\?/g) || []).length;
                   // For UPDATE, WHERE params are the LAST ones; for DELETE, they're all of them
-                  const isUpdate = sql.trim().toUpperCase().startsWith('UPDATE');
+                  const isUpdate = trimmedSql.toUpperCase().startsWith('UPDATE');
                   let whereParams: unknown[] = [];
                   if (params && params.length > 0) {
                     if (isUpdate) {
-                      // For UPDATE, WHERE params are at the end
+                      // For UPDATE, WHERE params are at the end of ORIGINAL params
                       whereParams = params.slice(-wherePlaceholders);
                     } else {
                       // For DELETE, all params are WHERE params
@@ -667,7 +687,7 @@ async function handleRequest(request: SQLiteRequest): Promise<SQLiteResponse> {
                   const idsResult = execute(db, selectSql, whereParams);
                   affectedIds = idsResult.rows.map((r: any) => r.id).filter(Boolean);
                 } catch (e) {
-                  // Ignore errors finding affected rows
+                  // Ignore errors finding affected rows - sync will still work via full merge
                 }
               }
             }
