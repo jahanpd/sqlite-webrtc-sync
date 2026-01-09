@@ -19060,7 +19060,17 @@ var SyncableDatabase = class _SyncableDatabase {
   }
   handleIncomingConnection(conn) {
     const peerId = conn.peer;
+    if (this.peers.has(peerId)) {
+      console.log(`[SyncableDatabase] Already connected to ${peerId}, closing duplicate incoming connection`);
+      conn.close();
+      return;
+    }
     conn.on("open", () => {
+      if (this.peers.has(peerId)) {
+        console.log(`[SyncableDatabase] Already connected to ${peerId}, closing duplicate connection`);
+        conn.close();
+        return;
+      }
       const peerConn = new PeerConnection(peerId, conn, this);
       this.peers.set(peerId, peerConn);
       this.emitPeerConnected(peerId);
@@ -19189,6 +19199,12 @@ var SyncableDatabase = class _SyncableDatabase {
     await new Promise((resolve, reject) => {
       let connected = false;
       conn.on("open", () => {
+        if (this.peers.has(peerId)) {
+          console.log(`[SyncableDatabase] Already connected to ${peerId}, closing duplicate outgoing connection`);
+          conn.close();
+          resolve();
+          return;
+        }
         connected = true;
         const peerConn = new PeerConnection(peerId, conn, this);
         this.peers.set(peerId, peerConn);
@@ -19341,29 +19357,63 @@ var SyncableDatabase = class _SyncableDatabase {
   clearQueue() {
     this.operationQueue = [];
   }
-  // Event registration
+  // Event registration - all methods return an unsubscribe function
+  /**
+   * Register a callback that fires when a peer connects.
+   * @returns Unsubscribe function to remove the callback
+   */
   onPeerConnected(callback) {
     this.onPeerConnectedCallbacks.push(callback);
+    return () => {
+      const index = this.onPeerConnectedCallbacks.indexOf(callback);
+      if (index !== -1) this.onPeerConnectedCallbacks.splice(index, 1);
+    };
   }
+  /**
+   * Register a callback that fires when a peer disconnects.
+   * @returns Unsubscribe function to remove the callback
+   */
   onPeerDisconnected(callback) {
     this.onPeerDisconnectedCallbacks.push(callback);
+    return () => {
+      const index = this.onPeerDisconnectedCallbacks.indexOf(callback);
+      if (index !== -1) this.onPeerDisconnectedCallbacks.splice(index, 1);
+    };
   }
+  /**
+   * Register a callback that fires when a sync operation is received from a peer.
+   * @returns Unsubscribe function to remove the callback
+   */
   onSyncReceived(callback) {
     this.onSyncReceivedCallbacks.push(callback);
+    return () => {
+      const index = this.onSyncReceivedCallbacks.indexOf(callback);
+      if (index !== -1) this.onSyncReceivedCallbacks.splice(index, 1);
+    };
   }
   /**
    * Register a callback that fires when a mutation (INSERT, UPDATE, DELETE) occurs.
    * This is used by React hooks to trigger re-renders.
+   * @returns Unsubscribe function to remove the callback
    */
   onMutation(callback) {
     this.onMutationCallbacks.push(callback);
+    return () => {
+      const index = this.onMutationCallbacks.indexOf(callback);
+      if (index !== -1) this.onMutationCallbacks.splice(index, 1);
+    };
   }
   /**
    * Register a callback that fires when data changes from bulk operations (merge, import).
    * This is used by React hooks to trigger re-renders when peer sync completes.
+   * @returns Unsubscribe function to remove the callback
    */
   onDataChanged(callback) {
     this.onDataChangedCallbacks.push(callback);
+    return () => {
+      const index = this.onDataChangedCallbacks.indexOf(callback);
+      if (index !== -1) this.onDataChangedCallbacks.splice(index, 1);
+    };
   }
   // Event emitters
   emitPeerConnected(peerId) {
@@ -19425,6 +19475,11 @@ var SyncableDatabase = class _SyncableDatabase {
       this.peer.destroy();
       this.peer = null;
     }
+    this.onPeerConnectedCallbacks.length = 0;
+    this.onPeerDisconnectedCallbacks.length = 0;
+    this.onSyncReceivedCallbacks.length = 0;
+    this.onMutationCallbacks.length = 0;
+    this.onDataChangedCallbacks.length = 0;
     await this.sendRequest("close", this.dbName, []);
     this.worker?.terminate();
     this.worker = null;
@@ -19711,17 +19766,19 @@ function DatabaseProvider({
         for (const sql of sqlStatements) {
           await db.exec(sql);
         }
-        db.onMutation((tables) => {
+        const unsubMutation = db.onMutation((tables) => {
           storeRef.current.invalidateTables(tables);
         });
+        let unsubSync;
         if (mode === "syncing") {
-          db.onSyncReceived((operation) => {
+          unsubSync = db.onSyncReceived((operation) => {
             storeRef.current.invalidateTables([operation.table]);
           });
         }
-        db.onDataChanged(() => {
+        const unsubDataChanged = db.onDataChanged(() => {
           storeRef.current.invalidateAll();
         });
+        db._unsubscribeFns = [unsubMutation, unsubSync, unsubDataChanged].filter(Boolean);
         if (!mounted) {
           await db.close();
           return;
@@ -19742,6 +19799,10 @@ function DatabaseProvider({
     return () => {
       mounted = false;
       if (dbRef.current) {
+        const unsubFns = dbRef.current._unsubscribeFns;
+        if (unsubFns) {
+          unsubFns.forEach((fn) => fn());
+        }
         dbRef.current.close();
         dbRef.current = null;
       }

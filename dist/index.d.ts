@@ -124,19 +124,33 @@ export declare class SyncableDatabase {
     getQueuedOperations(): SyncOperation[];
     pushQueuedOperations(): Promise<void>;
     clearQueue(): void;
-    onPeerConnected(callback: PeerConnectedCallback): void;
-    onPeerDisconnected(callback: PeerDisconnectedCallback): void;
-    onSyncReceived(callback: SyncReceivedCallback): void;
+    /**
+     * Register a callback that fires when a peer connects.
+     * @returns Unsubscribe function to remove the callback
+     */
+    onPeerConnected(callback: PeerConnectedCallback): () => void;
+    /**
+     * Register a callback that fires when a peer disconnects.
+     * @returns Unsubscribe function to remove the callback
+     */
+    onPeerDisconnected(callback: PeerDisconnectedCallback): () => void;
+    /**
+     * Register a callback that fires when a sync operation is received from a peer.
+     * @returns Unsubscribe function to remove the callback
+     */
+    onSyncReceived(callback: SyncReceivedCallback): () => void;
     /**
      * Register a callback that fires when a mutation (INSERT, UPDATE, DELETE) occurs.
      * This is used by React hooks to trigger re-renders.
+     * @returns Unsubscribe function to remove the callback
      */
-    onMutation(callback: MutationCallback): void;
+    onMutation(callback: MutationCallback): () => void;
     /**
      * Register a callback that fires when data changes from bulk operations (merge, import).
      * This is used by React hooks to trigger re-renders when peer sync completes.
+     * @returns Unsubscribe function to remove the callback
      */
-    onDataChanged(callback: DataChangedCallback): void;
+    onDataChanged(callback: DataChangedCallback): () => void;
     private emitPeerConnected;
     private emitPeerDisconnected;
     private emitSyncReceived;

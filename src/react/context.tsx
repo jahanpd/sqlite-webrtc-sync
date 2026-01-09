@@ -73,21 +73,26 @@ export function DatabaseProvider<S extends SchemaDef>({
         }
 
         // Register mutation listener to invalidate queries (for local reactivity)
-        db.onMutation((tables) => {
+        // Store unsubscribe functions for cleanup
+        const unsubMutation = db.onMutation((tables) => {
           storeRef.current.invalidateTables(tables);
         });
 
         // Register sync event listener to invalidate queries (for remote sync)
+        let unsubSync: (() => void) | undefined;
         if (mode === 'syncing') {
-          db.onSyncReceived((operation) => {
+          unsubSync = db.onSyncReceived((operation) => {
             storeRef.current.invalidateTables([operation.table]);
           });
         }
 
         // Register data changed listener to invalidate all queries (for merge/import)
-        db.onDataChanged(() => {
+        const unsubDataChanged = db.onDataChanged(() => {
           storeRef.current.invalidateAll();
         });
+
+        // Store unsubscribe functions for cleanup
+        (db as any)._unsubscribeFns = [unsubMutation, unsubSync, unsubDataChanged].filter(Boolean);
 
         if (!mounted) {
           await db.close();
@@ -113,6 +118,11 @@ export function DatabaseProvider<S extends SchemaDef>({
     return () => {
       mounted = false;
       if (dbRef.current) {
+        // Unsubscribe callbacks before closing
+        const unsubFns = (dbRef.current as any)._unsubscribeFns as (() => void)[] | undefined;
+        if (unsubFns) {
+          unsubFns.forEach(fn => fn());
+        }
         dbRef.current.close();
         dbRef.current = null;
       }
