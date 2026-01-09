@@ -48,6 +48,8 @@ type SyncReceivedCallback = (operation: SyncOperation) => void;
 type MutationCallback = (tables: string[]) => void;
 type DataChangedCallback = () => void;
 export declare class SyncableDatabase {
+    private static instances;
+    private static pendingCreations;
     private dbName;
     private mode;
     private peerServerConfig?;
@@ -59,6 +61,10 @@ export declare class SyncableDatabase {
     private pendingRequests;
     private nextRequestId;
     private isInitialized;
+    private isClosed;
+    private refCount;
+    private closeTimeout;
+    private static readonly CLOSE_DELAY;
     private activeServerConfig;
     private discoveryTimer;
     private peerRetryTimer;
@@ -72,6 +78,10 @@ export declare class SyncableDatabase {
     private onFallbackToCloudCallback?;
     private onPeerErrorCallback?;
     private constructor();
+    /**
+     * Create or get existing database instance.
+     * Uses singleton pattern to prevent duplicate instances (e.g., from React Strict Mode).
+     */
     static create(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase>;
     private init;
     /**
@@ -152,11 +162,17 @@ export declare class SyncableDatabase {
      */
     onDataChanged(callback: DataChangedCallback): () => void;
     private emitPeerConnected;
+    /**
+     * Flush all queued operations to a specific peer.
+     * Called automatically when a peer connects.
+     */
+    private flushQueueToPeer;
     private emitPeerDisconnected;
     private emitSyncReceived;
     private emitMutation;
     private emitDataChanged;
     close(): Promise<void>;
+    private doClose;
 }
 export declare function createDatabase(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase>;
 export declare function syncableSqliteVitePlugin(): {

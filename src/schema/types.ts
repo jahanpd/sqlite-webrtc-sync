@@ -56,7 +56,8 @@ type OptionalColumnValues<T extends TableDef> = {
     : never
 };
 
-export type InsertData<T extends TableDef> = RequiredColumnValues<T> & Partial<OptionalColumnValues<T>>;
+// Allow optional id in insert data - if provided, it will be used instead of auto-generating
+export type InsertData<T extends TableDef> = RequiredColumnValues<T> & Partial<OptionalColumnValues<T>> & { id?: string };
 
 export type UpdateData<T extends TableDef> = Partial<RequiredColumnValues<T> & OptionalColumnValues<T>>;
 

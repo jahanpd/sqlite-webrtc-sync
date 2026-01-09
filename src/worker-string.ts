@@ -11710,10 +11710,19 @@ function rewriteInsert(sql, tableName, params) {
   const userValues = [];
   const userParams = [];
   let paramIndex = 0;
+  let userProvidedId = null;
   for (let i = 0; i < originalColumns.length; i++) {
     const col = originalColumns[i];
     const val = valuesStr[i];
     const isPlaceholder = val === "?";
+    const colLower = col.replace(/["\`]/g, "").trim().toLowerCase();
+    if (colLower === "id") {
+      if (isPlaceholder && params && paramIndex < params.length) {
+        userProvidedId = String(params[paramIndex]);
+      } else if (!isPlaceholder) {
+        userProvidedId = val.replace(/^['"]|['"]\$/g, "");
+      }
+    }
     if (!isSystemColumn(col)) {
       userColumns.push(col);
       if (isPlaceholder) {
@@ -11729,16 +11738,18 @@ function rewriteInsert(sql, tableName, params) {
       paramIndex++;
     }
   }
-  const uuid = crypto.randomUUID();
+  const rowId = userProvidedId || crypto.randomUUID();
   const timestamp = Date.now();
   const newColumns = [...userColumns, "id", "updated_at", "deleted"].join(", ");
   const allValues = [...userValues, "?", "?", "?"].join(", ");
-  const newSql = \`INSERT INTO \${tableName} (\${newColumns}) VALUES (\${allValues})\`;
-  const newParams = [...userParams, uuid, timestamp, 0];
-  return { sql: newSql, params: newParams, rowId: uuid };
+  const insertType = userProvidedId ? "INSERT OR IGNORE INTO" : "INSERT INTO";
+  const newSql = \`\${insertType} \${tableName} (\${newColumns}) VALUES (\${allValues})\`;
+  const newParams = [...userParams, rowId, timestamp, 0];
+  return { sql: newSql, params: newParams, rowId };
 }
 function rewriteUpdate(sql, tableName, params) {
-  const updateMatch = sql.match(/UPDATE\\s+["\`]?(\\w+)["\`]?\\s+SET\\s+(.+?)(?:\\s+WHERE\\s+(.+))?\$/i);
+  const trimmedSql = sql.trim();
+  const updateMatch = trimmedSql.match(/UPDATE\\s+["\`]?(\\w+)["\`]?\\s+SET\\s+(.+?)(?:\\s+WHERE\\s+(.+))?\$/i);
   if (!updateMatch) {
     return { sql, params: params || [] };
   }
@@ -11997,12 +12008,13 @@ async function handleRequest(request) {
             if (processed.rowId) {
               affectedIds = [processed.rowId];
             } else {
-              const whereMatch = sql.match(/WHERE\\s+(.+)\$/i);
+              const trimmedSql = sql.trim();
+              const whereMatch = trimmedSql.match(/WHERE\\s+(.+)\$/i);
               if (whereMatch) {
                 const selectSql = \`SELECT id FROM \${processed.table} WHERE \${whereMatch[1]}\`;
                 try {
                   const wherePlaceholders = (whereMatch[1].match(/\\?/g) || []).length;
-                  const isUpdate = sql.trim().toUpperCase().startsWith("UPDATE");
+                  const isUpdate = trimmedSql.toUpperCase().startsWith("UPDATE");
                   let whereParams = [];
                   if (params && params.length > 0) {
                     if (isUpdate) {

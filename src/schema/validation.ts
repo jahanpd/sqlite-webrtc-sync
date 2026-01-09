@@ -72,6 +72,17 @@ export function validateInsertData<T extends TableDef>(
   }
 
   for (const columnName of Object.keys(data)) {
+    // Allow 'id' as a special case - it's a system column that users can optionally provide
+    if (columnName === 'id') {
+      // Validate that id is a string if provided
+      if (data[columnName] !== undefined && typeof data[columnName] !== 'string') {
+        errors.push({
+          column: columnName,
+          message: `Column "id" must be a string but got ${typeof data[columnName]}`,
+        });
+      }
+      continue;
+    }
     if (!table.columns[columnName]) {
       errors.push({
         column: columnName,

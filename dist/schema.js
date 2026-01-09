@@ -141,6 +141,15 @@ function validateInsertData(table, data) {
     }
   }
   for (const columnName of Object.keys(data)) {
+    if (columnName === "id") {
+      if (data[columnName] !== void 0 && typeof data[columnName] !== "string") {
+        errors.push({
+          column: columnName,
+          message: `Column "id" must be a string but got ${typeof data[columnName]}`
+        });
+      }
+      continue;
+    }
     if (!table.columns[columnName]) {
       errors.push({
         column: columnName,

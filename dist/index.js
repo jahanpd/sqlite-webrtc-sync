@@ -11750,10 +11750,19 @@ function rewriteInsert(sql, tableName, params) {
   const userValues = [];
   const userParams = [];
   let paramIndex = 0;
+  let userProvidedId = null;
   for (let i = 0; i < originalColumns.length; i++) {
     const col = originalColumns[i];
     const val = valuesStr[i];
     const isPlaceholder = val === "?";
+    const colLower = col.replace(/["\`]/g, "").trim().toLowerCase();
+    if (colLower === "id") {
+      if (isPlaceholder && params && paramIndex < params.length) {
+        userProvidedId = String(params[paramIndex]);
+      } else if (!isPlaceholder) {
+        userProvidedId = val.replace(/^['"]|['"]$/g, "");
+      }
+    }
     if (!isSystemColumn(col)) {
       userColumns.push(col);
       if (isPlaceholder) {
@@ -11769,16 +11778,18 @@ function rewriteInsert(sql, tableName, params) {
       paramIndex++;
     }
   }
-  const uuid = crypto.randomUUID();
+  const rowId = userProvidedId || crypto.randomUUID();
   const timestamp = Date.now();
   const newColumns = [...userColumns, "id", "updated_at", "deleted"].join(", ");
   const allValues = [...userValues, "?", "?", "?"].join(", ");
-  const newSql = \`INSERT INTO \${tableName} (\${newColumns}) VALUES (\${allValues})\`;
-  const newParams = [...userParams, uuid, timestamp, 0];
-  return { sql: newSql, params: newParams, rowId: uuid };
+  const insertType = userProvidedId ? "INSERT OR IGNORE INTO" : "INSERT INTO";
+  const newSql = \`\${insertType} \${tableName} (\${newColumns}) VALUES (\${allValues})\`;
+  const newParams = [...userParams, rowId, timestamp, 0];
+  return { sql: newSql, params: newParams, rowId };
 }
 function rewriteUpdate(sql, tableName, params) {
-  const updateMatch = sql.match(/UPDATE\\s+["\`]?(\\w+)["\`]?\\s+SET\\s+(.+?)(?:\\s+WHERE\\s+(.+))?$/i);
+  const trimmedSql = sql.trim();
+  const updateMatch = trimmedSql.match(/UPDATE\\s+["\`]?(\\w+)["\`]?\\s+SET\\s+(.+?)(?:\\s+WHERE\\s+(.+))?$/i);
   if (!updateMatch) {
     return { sql, params: params || [] };
   }
@@ -12037,12 +12048,13 @@ async function handleRequest(request) {
             if (processed.rowId) {
               affectedIds = [processed.rowId];
             } else {
-              const whereMatch = sql.match(/WHERE\\s+(.+)$/i);
+              const trimmedSql = sql.trim();
+              const whereMatch = trimmedSql.match(/WHERE\\s+(.+)$/i);
               if (whereMatch) {
                 const selectSql = \`SELECT id FROM \${processed.table} WHERE \${whereMatch[1]}\`;
                 try {
                   const wherePlaceholders = (whereMatch[1].match(/\\?/g) || []).length;
-                  const isUpdate = sql.trim().toUpperCase().startsWith("UPDATE");
+                  const isUpdate = trimmedSql.toUpperCase().startsWith("UPDATE");
                   let whereParams = [];
                   if (params && params.length > 0) {
                     if (isUpdate) {
@@ -18794,6 +18806,9 @@ var DEFAULT_ICE_SERVERS = [
   }
 ];
 var SyncableDatabase = class _SyncableDatabase {
+  // Singleton cache - prevents duplicate instances with React Strict Mode
+  static instances = /* @__PURE__ */ new Map();
+  static pendingCreations = /* @__PURE__ */ new Map();
   dbName;
   mode;
   peerServerConfig;
@@ -18805,6 +18820,13 @@ var SyncableDatabase = class _SyncableDatabase {
   pendingRequests = /* @__PURE__ */ new Map();
   nextRequestId = 0;
   isInitialized = false;
+  isClosed = false;
+  refCount = 0;
+  // Track how many components are using this instance
+  closeTimeout = null;
+  // Delayed close timer
+  static CLOSE_DELAY = 2e3;
+  // ms to wait before actually closing (allows for SPA navigation)
   // Active server config (set after successful connection)
   activeServerConfig = null;
   // Auto-sync properties
@@ -18828,10 +18850,47 @@ var SyncableDatabase = class _SyncableDatabase {
     this.onFallbackToCloudCallback = onFallbackToCloud;
     this.onPeerErrorCallback = onPeerError;
   }
+  /**
+   * Create or get existing database instance.
+   * Uses singleton pattern to prevent duplicate instances (e.g., from React Strict Mode).
+   */
   static async create(dbName, config) {
-    const db = new _SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval, config.onFallbackToCloud, config.onPeerError);
-    await db.init();
-    return db;
+    const existing = _SyncableDatabase.instances.get(dbName);
+    console.log(`[SyncableDatabase] create() called for ${dbName}, existing=${!!existing}, isClosed=${existing?.isClosed}, refCount=${existing?.refCount}`);
+    if (existing && !existing.isClosed) {
+      console.log(`[SyncableDatabase] Reusing existing instance for database: ${dbName}`);
+      if (existing.closeTimeout) {
+        console.log(`[SyncableDatabase] Cancelling pending close for: ${dbName}`);
+        clearTimeout(existing.closeTimeout);
+        existing.closeTimeout = null;
+      }
+      existing.refCount++;
+      if (config.onFallbackToCloud) {
+        existing.onFallbackToCloudCallback = config.onFallbackToCloud;
+      }
+      if (config.onPeerError) {
+        existing.onPeerErrorCallback = config.onPeerError;
+      }
+      return existing;
+    }
+    const pending = _SyncableDatabase.pendingCreations.get(dbName);
+    if (pending) {
+      console.log(`[SyncableDatabase] Waiting for pending creation of database: ${dbName}`);
+      const instance = await pending;
+      instance.refCount++;
+      return instance;
+    }
+    console.log(`[SyncableDatabase] Creating NEW instance for database: ${dbName}`);
+    const createPromise = (async () => {
+      const db = new _SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval, config.onFallbackToCloud, config.onPeerError);
+      await db.init();
+      db.refCount = 1;
+      _SyncableDatabase.instances.set(dbName, db);
+      _SyncableDatabase.pendingCreations.delete(dbName);
+      return db;
+    })();
+    _SyncableDatabase.pendingCreations.set(dbName, createPromise);
+    return createPromise;
   }
   async init() {
     console.log(`[SyncableDatabase] Starting initialization for database: ${this.dbName}`);
@@ -19068,18 +19127,12 @@ var SyncableDatabase = class _SyncableDatabase {
         conn.close();
         return;
       }
-      const peerConn = new PeerConnection(peerId, conn, this);
+      const peerConn = new PeerConnection(peerId, conn, this, (eventPeerId) => {
+        this.peers.delete(eventPeerId);
+        this.emitPeerDisconnected(eventPeerId);
+      });
       this.peers.set(peerId, peerConn);
       this.emitPeerConnected(peerId);
-    });
-    conn.on("close", () => {
-      this.peers.delete(peerId);
-      this.emitPeerDisconnected(peerId);
-    });
-    conn.on("error", (err) => {
-      console.error("Connection error:", err);
-      this.peers.delete(peerId);
-      this.emitPeerDisconnected(peerId);
     });
   }
   sendRequest(type, dbName, args, extra) {
@@ -19090,6 +19143,9 @@ var SyncableDatabase = class _SyncableDatabase {
     });
   }
   async exec(sql, params) {
+    if (this.isClosed) {
+      throw new Error("Database is closed");
+    }
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
@@ -19129,6 +19185,9 @@ var SyncableDatabase = class _SyncableDatabase {
     }
   }
   async applyRemoteOperation(operation) {
+    if (this.isClosed) {
+      return;
+    }
     if (this.appliedOperations.has(operation.id)) {
       return;
     }
@@ -19137,6 +19196,9 @@ var SyncableDatabase = class _SyncableDatabase {
     this.emitSyncReceived(operation);
   }
   async export() {
+    if (this.isClosed) {
+      throw new Error("Database is closed");
+    }
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
@@ -19144,6 +19206,9 @@ var SyncableDatabase = class _SyncableDatabase {
     return new Uint8Array(data);
   }
   async exportBinary() {
+    if (this.isClosed) {
+      throw new Error("Database is closed");
+    }
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
@@ -19166,6 +19231,9 @@ var SyncableDatabase = class _SyncableDatabase {
     URL.revokeObjectURL(url);
   }
   async import(data) {
+    if (this.isClosed) {
+      throw new Error("Database is closed");
+    }
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
@@ -19173,6 +19241,9 @@ var SyncableDatabase = class _SyncableDatabase {
     this.emitDataChanged();
   }
   async importBinary(data) {
+    if (this.isClosed) {
+      throw new Error("Database is closed");
+    }
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
@@ -19195,7 +19266,15 @@ var SyncableDatabase = class _SyncableDatabase {
     const conn = this.peer.connect(peerId);
     await new Promise((resolve, reject) => {
       let connected = false;
+      let connectionTimeout = null;
+      const cleanup = () => {
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout);
+          connectionTimeout = null;
+        }
+      };
       conn.on("open", () => {
+        cleanup();
         if (this.peers.has(peerId)) {
           console.log(`[SyncableDatabase] Already connected to ${peerId}, closing duplicate outgoing connection`);
           conn.close();
@@ -19203,27 +19282,21 @@ var SyncableDatabase = class _SyncableDatabase {
           return;
         }
         connected = true;
-        const peerConn = new PeerConnection(peerId, conn, this);
+        const peerConn = new PeerConnection(peerId, conn, this, (eventPeerId) => {
+          this.peers.delete(eventPeerId);
+          this.emitPeerDisconnected(eventPeerId);
+        });
         this.peers.set(peerId, peerConn);
         this.emitPeerConnected(peerId);
         resolve();
       });
-      conn.on("close", () => {
-        if (this.peers.has(peerId)) {
-          this.peers.delete(peerId);
-          this.emitPeerDisconnected(peerId);
-        }
-      });
       conn.on("error", (err) => {
+        cleanup();
         if (!connected) {
           reject(err);
-        } else {
-          console.error("Connection error:", err);
-          this.peers.delete(peerId);
-          this.emitPeerDisconnected(peerId);
         }
       });
-      setTimeout(() => {
+      connectionTimeout = setTimeout(() => {
         if (!connected) {
           reject(new Error("Connection timeout"));
         }
@@ -19311,6 +19384,9 @@ var SyncableDatabase = class _SyncableDatabase {
     await Promise.all(promises);
   }
   async merge(remoteData) {
+    if (this.isClosed) {
+      throw new Error("Database is closed");
+    }
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
@@ -19318,6 +19394,9 @@ var SyncableDatabase = class _SyncableDatabase {
     this.emitDataChanged();
   }
   async mergeBinary(binaryData) {
+    if (this.isClosed) {
+      throw new Error("Database is closed");
+    }
     if (!this.isInitialized) {
       throw new Error("Database not initialized");
     }
@@ -19414,6 +19493,7 @@ var SyncableDatabase = class _SyncableDatabase {
   }
   // Event emitters
   emitPeerConnected(peerId) {
+    this.flushQueueToPeer(peerId);
     for (const cb of this.onPeerConnectedCallbacks) {
       try {
         cb(peerId);
@@ -19421,6 +19501,20 @@ var SyncableDatabase = class _SyncableDatabase {
         console.error("Callback error:", e);
       }
     }
+  }
+  /**
+   * Flush all queued operations to a specific peer.
+   * Called automatically when a peer connects.
+   */
+  flushQueueToPeer(peerId) {
+    if (this.operationQueue.length === 0) return;
+    const peerConn = this.peers.get(peerId);
+    if (!peerConn) return;
+    console.log(`[SyncableDatabase] Flushing ${this.operationQueue.length} queued operations to peer: ${peerId}`);
+    for (const operation of this.operationQueue) {
+      peerConn.sendOperation(operation);
+    }
+    this.operationQueue = [];
   }
   emitPeerDisconnected(peerId) {
     for (const cb of this.onPeerDisconnectedCallbacks) {
@@ -19459,6 +19553,28 @@ var SyncableDatabase = class _SyncableDatabase {
     }
   }
   async close() {
+    this.refCount--;
+    if (this.refCount > 0) {
+      console.log(`[SyncableDatabase] Skipping close for ${this.dbName}, ${this.refCount} references remaining`);
+      return;
+    }
+    console.log(`[SyncableDatabase] Scheduling delayed close for ${this.dbName} in ${_SyncableDatabase.CLOSE_DELAY}ms`);
+    if (this.closeTimeout) {
+      clearTimeout(this.closeTimeout);
+    }
+    this.closeTimeout = setTimeout(() => {
+      if (this.refCount > 0) {
+        console.log(`[SyncableDatabase] Close cancelled for ${this.dbName}, new references acquired`);
+        return;
+      }
+      this.doClose();
+    }, _SyncableDatabase.CLOSE_DELAY);
+  }
+  async doClose() {
+    console.log(`[SyncableDatabase] Actually closing database: ${this.dbName}`);
+    this.isClosed = true;
+    this.closeTimeout = null;
+    _SyncableDatabase.instances.delete(this.dbName);
     if (this.discoveryTimer) {
       clearInterval(this.discoveryTimer);
       this.discoveryTimer = null;
@@ -19469,6 +19585,10 @@ var SyncableDatabase = class _SyncableDatabase {
     }
     this.peers.clear();
     if (this.peer) {
+      try {
+        this.peer.removeAllListeners?.();
+      } catch (e) {
+      }
       this.peer.destroy();
       this.peer = null;
     }
@@ -19487,14 +19607,22 @@ var PeerConnection = class {
   peerId;
   connection;
   db;
+  onDisconnect;
   pendingExport = null;
   pendingImport = null;
   pendingMerge = null;
-  constructor(peerId, connection, db) {
+  isClosed = false;
+  // Store bound handlers so we can remove them later
+  dataHandler;
+  closeHandler;
+  errorHandler;
+  constructor(peerId, connection, db, onDisconnect) {
     this.peerId = peerId;
     this.connection = connection;
     this.db = db;
-    this.connection.on("data", async (data) => {
+    this.onDisconnect = onDisconnect;
+    this.dataHandler = async (data) => {
+      if (this.isClosed) return;
       const msg = data;
       if (msg.type === "sync-operation" && msg.operation) {
         await this.db.applyRemoteOperation(msg.operation);
@@ -19518,17 +19646,39 @@ var PeerConnection = class {
       } else if (msg.type === "pushMergeData" && msg.data) {
         await this.db.merge(new Uint8Array(msg.data));
       }
-    });
-    this.connection.on("close", () => {
-      this.pendingExport?.reject(new Error("Connection closed"));
-      this.pendingImport?.reject(new Error("Connection closed"));
-      this.pendingMerge?.reject(new Error("Connection closed"));
-    });
-    this.connection.on("error", (err) => {
-      this.pendingExport?.reject(err);
-      this.pendingImport?.reject(err);
-      this.pendingMerge?.reject(err);
-    });
+    };
+    this.closeHandler = () => {
+      if (this.isClosed) return;
+      this.handleDisconnect(new Error("Connection closed"));
+    };
+    this.errorHandler = (err) => {
+      if (this.isClosed) return;
+      console.error("PeerConnection error:", err);
+      this.handleDisconnect(err);
+    };
+    this.connection.on("data", this.dataHandler);
+    this.connection.on("close", this.closeHandler);
+    this.connection.on("error", this.errorHandler);
+  }
+  handleDisconnect(err) {
+    if (this.isClosed) return;
+    this.isClosed = true;
+    this.pendingExport?.reject(err);
+    this.pendingImport?.reject(err);
+    this.pendingMerge?.reject(err);
+    this.pendingExport = null;
+    this.pendingImport = null;
+    this.pendingMerge = null;
+    this.removeListeners();
+    this.onDisconnect(this.peerId);
+  }
+  removeListeners() {
+    try {
+      this.connection.off("data", this.dataHandler);
+      this.connection.off("close", this.closeHandler);
+      this.connection.off("error", this.errorHandler);
+    } catch (e) {
+    }
   }
   sendOperation(operation) {
     if (this.connection.open) {
@@ -19592,7 +19742,13 @@ var PeerConnection = class {
     return this.peerId;
   }
   close() {
-    this.connection.close();
+    if (this.isClosed) return;
+    this.isClosed = true;
+    this.removeListeners();
+    try {
+      this.connection.close();
+    } catch (e) {
+    }
   }
 };
 async function createDatabase(dbName, config) {

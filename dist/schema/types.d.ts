@@ -30,7 +30,9 @@ type RequiredColumnValues<T extends TableDef> = {
 type OptionalColumnValues<T extends TableDef> = {
     [K in keyof T['columns']]: T['columns'][K] extends ColumnDef<SQLType, true> ? InferColumnType<T['columns'][K]> | undefined : never;
 };
-export type InsertData<T extends TableDef> = RequiredColumnValues<T> & Partial<OptionalColumnValues<T>>;
+export type InsertData<T extends TableDef> = RequiredColumnValues<T> & Partial<OptionalColumnValues<T>> & {
+    id?: string;
+};
 export type UpdateData<T extends TableDef> = Partial<RequiredColumnValues<T> & OptionalColumnValues<T>>;
 export type TableNames<S extends SchemaDef> = keyof S & string;
 export type RowType<S extends SchemaDef, T extends keyof S> = InferRow<S[T]>;
