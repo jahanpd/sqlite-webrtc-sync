@@ -18784,6 +18784,18 @@ var PEERJS_CLOUD_PORT = 443;
 var PEERJS_CLOUD_PATH = "/";
 var PEERJS_CLOUD_SECURE = true;
 var PEER_CONNECTION_TIMEOUT = 1e4;
+var PEER_RETRY_INTERVAL = 6e4;
+var DEFAULT_ICE_SERVERS = [
+  // Google STUN servers (free, reliable)
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  // PeerJS public TURN servers (free, for relay fallback)
+  {
+    urls: ["turn:eu-0.turn.peerjs.com:3478", "turn:us-0.turn.peerjs.com:3478"],
+    username: "peerjs",
+    credential: "peerjsp"
+  }
+];
 var SyncableDatabase = class _SyncableDatabase {
   dbName;
   mode;
@@ -18800,6 +18812,7 @@ var SyncableDatabase = class _SyncableDatabase {
   activeServerConfig = null;
   // Auto-sync properties
   discoveryTimer = null;
+  peerRetryTimer = null;
   operationQueue = [];
   appliedOperations = /* @__PURE__ */ new Set();
   // Event callbacks
@@ -18809,15 +18822,17 @@ var SyncableDatabase = class _SyncableDatabase {
   onMutationCallbacks = [];
   onDataChangedCallbacks = [];
   onFallbackToCloudCallback;
-  constructor(dbName, mode, peerServerConfig, discoveryInterval, onFallbackToCloud) {
+  onPeerErrorCallback;
+  constructor(dbName, mode, peerServerConfig, discoveryInterval, onFallbackToCloud, onPeerError) {
     this.dbName = dbName;
     this.mode = mode;
     this.peerServerConfig = peerServerConfig;
     this.discoveryInterval = discoveryInterval ?? 5e3;
     this.onFallbackToCloudCallback = onFallbackToCloud;
+    this.onPeerErrorCallback = onPeerError;
   }
   static async create(dbName, config) {
-    const db = new _SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval, config.onFallbackToCloud);
+    const db = new _SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval, config.onFallbackToCloud, config.onPeerError);
     await db.init();
     return db;
   }
@@ -18861,10 +18876,62 @@ var SyncableDatabase = class _SyncableDatabase {
     this.isInitialized = true;
     console.log(`[SyncableDatabase] Initialization complete for database: ${this.dbName}`);
     if (this.mode === "syncing") {
-      console.log(`[SyncableDatabase] Initializing peer connection...`);
-      await this.initPeer();
-      this.startDiscovery();
+      this.initPeerWithRetry();
     }
+  }
+  /**
+   * Attempts to initialize peer connection with automatic retry on failure.
+   * This is non-blocking - the database works locally even if peer connection fails.
+   */
+  initPeerWithRetry() {
+    console.log(`[SyncableDatabase] Initializing peer connection...`);
+    this.tryInitPeer().catch((err) => {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.warn(`[SyncableDatabase] Peer connection failed, will retry in ${PEER_RETRY_INTERVAL / 1e3}s:`, error.message);
+      if (this.onPeerErrorCallback) {
+        try {
+          this.onPeerErrorCallback(error);
+        } catch (e) {
+          console.error("Peer error callback threw:", e);
+        }
+      }
+      this.schedulePeerRetry();
+    });
+  }
+  /**
+   * Schedules periodic retry of peer connection.
+   */
+  schedulePeerRetry() {
+    if (this.peerRetryTimer) {
+      clearInterval(this.peerRetryTimer);
+    }
+    this.peerRetryTimer = setInterval(() => {
+      if (!this.peer) {
+        console.log("[SyncableDatabase] Retrying peer connection...");
+        this.tryInitPeer().catch((retryErr) => {
+          console.warn("[SyncableDatabase] Peer retry failed:", retryErr instanceof Error ? retryErr.message : String(retryErr));
+        });
+      } else {
+        this.clearPeerRetryTimer();
+      }
+    }, PEER_RETRY_INTERVAL);
+  }
+  /**
+   * Clears the peer retry timer.
+   */
+  clearPeerRetryTimer() {
+    if (this.peerRetryTimer) {
+      clearInterval(this.peerRetryTimer);
+      this.peerRetryTimer = null;
+    }
+  }
+  /**
+   * Attempts to initialize peer connection. Throws on failure.
+   */
+  async tryInitPeer() {
+    await this.initPeer();
+    this.clearPeerRetryTimer();
+    this.startDiscovery();
   }
   async initPeer() {
     const { Peer } = await Promise.resolve().then(() => (init_bundler(), bundler_exports));
@@ -18902,8 +18969,10 @@ var SyncableDatabase = class _SyncableDatabase {
         });
       });
     };
-    const hasUserConfig = this.peerServerConfig && (this.peerServerConfig.host || this.peerServerConfig.port || this.peerServerConfig.path);
-    if (hasUserConfig) {
+    const iceServers = this.peerServerConfig?.iceServers || DEFAULT_ICE_SERVERS;
+    const iceConfig = { iceServers };
+    const hasUserServerConfig = this.peerServerConfig && (this.peerServerConfig.host || this.peerServerConfig.port || this.peerServerConfig.path);
+    if (hasUserServerConfig) {
       const userServerConfig = {
         host: this.peerServerConfig.host || PEERJS_CLOUD_HOST,
         port: this.peerServerConfig.port || PEERJS_CLOUD_PORT,
@@ -18914,7 +18983,8 @@ var SyncableDatabase = class _SyncableDatabase {
         host: userServerConfig.host,
         port: userServerConfig.port,
         path: userServerConfig.path,
-        secure: userServerConfig.secure
+        secure: userServerConfig.secure,
+        config: iceConfig
       };
       try {
         await connectPeer(userPeerOptions, userServerConfig);
@@ -18943,7 +19013,10 @@ var SyncableDatabase = class _SyncableDatabase {
       path: PEERJS_CLOUD_PATH,
       secure: PEERJS_CLOUD_SECURE
     };
-    await connectPeer({}, cloudServerConfig);
+    const cloudPeerOptions = {
+      config: iceConfig
+    };
+    await connectPeer(cloudPeerOptions, cloudServerConfig);
     console.log("[SyncableDatabase] Connected to PeerJS cloud server");
   }
   startDiscovery() {
@@ -19343,6 +19416,7 @@ var SyncableDatabase = class _SyncableDatabase {
       clearInterval(this.discoveryTimer);
       this.discoveryTimer = null;
     }
+    this.clearPeerRetryTimer();
     for (const peerConn of this.peers.values()) {
       peerConn.close();
     }
@@ -19610,6 +19684,7 @@ function DatabaseProvider({
   peerServer,
   discoveryInterval,
   onFallbackToCloud,
+  onPeerError,
   children
 }) {
   const [contextValue, setContextValue] = useState(null);
@@ -19624,7 +19699,8 @@ function DatabaseProvider({
           mode,
           peerServer,
           discoveryInterval,
-          onFallbackToCloud
+          onFallbackToCloud,
+          onPeerError
         });
         if (!mounted) {
           await db.close();
@@ -19671,7 +19747,7 @@ function DatabaseProvider({
       }
       storeRef.current.clear();
     };
-  }, [name, mode, peerServer, discoveryInterval, onFallbackToCloud, schema]);
+  }, [name, mode, peerServer, discoveryInterval, onFallbackToCloud, onPeerError, schema]);
   const Context = getOrCreateContext(name);
   if (error) {
     throw error;

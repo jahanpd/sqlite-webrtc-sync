@@ -1,21 +1,32 @@
 type DatabaseMode = 'syncing' | 'local';
 
+// ICE server configuration for WebRTC
+export interface IceServer {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
 export interface PeerServerConfig {
   host?: string;
   port?: number;
   path?: string;
   secure?: boolean;
   fallbackToCloud?: boolean;  // If true, fall back to PeerJS cloud on connection failure. Default: false
+  iceServers?: IceServer[];   // Custom STUN/TURN servers. If not provided, uses Google STUN + PeerJS TURN
 }
 
 // Callback for when fallback to PeerJS cloud occurs
 type FallbackCallback = (reason: string) => void;
+// Callback for when peer connection fails
+type PeerErrorCallback = (error: Error) => void;
 
 export interface DatabaseConfig {
   mode: DatabaseMode;
   peerServer?: PeerServerConfig;
   discoveryInterval?: number;  // ms, default 5000
   onFallbackToCloud?: FallbackCallback;  // Called when fallback to PeerJS cloud occurs
+  onPeerError?: PeerErrorCallback;  // Called when peer connection fails (database still works locally)
 }
 
 export interface QueryResult {
@@ -67,6 +78,22 @@ const PEERJS_CLOUD_SECURE = true;
 // Connection timeout for fallback logic
 const PEER_CONNECTION_TIMEOUT = 10000;
 
+// Retry interval for peer connection (60 seconds)
+const PEER_RETRY_INTERVAL = 60000;
+
+// Default ICE servers: Google STUN + PeerJS public TURN
+const DEFAULT_ICE_SERVERS: IceServer[] = [
+  // Google STUN servers (free, reliable)
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  // PeerJS public TURN servers (free, for relay fallback)
+  { 
+    urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'],
+    username: 'peerjs',
+    credential: 'peerjsp'
+  }
+];
+
 interface ActiveServerConfig {
   host: string;
   port: number;
@@ -92,6 +119,7 @@ export class SyncableDatabase {
   
   // Auto-sync properties
   private discoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private peerRetryTimer: ReturnType<typeof setInterval> | null = null;
   private operationQueue: SyncOperation[] = [];
   private appliedOperations: Set<string> = new Set();
   
@@ -102,17 +130,19 @@ export class SyncableDatabase {
   private onMutationCallbacks: MutationCallback[] = [];
   private onDataChangedCallbacks: DataChangedCallback[] = [];
   private onFallbackToCloudCallback?: FallbackCallback;
+  private onPeerErrorCallback?: PeerErrorCallback;
 
-  private constructor(dbName: string, mode: DatabaseMode, peerServerConfig?: PeerServerConfig, discoveryInterval?: number, onFallbackToCloud?: FallbackCallback) {
+  private constructor(dbName: string, mode: DatabaseMode, peerServerConfig?: PeerServerConfig, discoveryInterval?: number, onFallbackToCloud?: FallbackCallback, onPeerError?: PeerErrorCallback) {
     this.dbName = dbName;
     this.mode = mode;
     this.peerServerConfig = peerServerConfig;
     this.discoveryInterval = discoveryInterval ?? 5000;
     this.onFallbackToCloudCallback = onFallbackToCloud;
+    this.onPeerErrorCallback = onPeerError;
   }
 
   static async create(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase> {
-    const db = new SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval, config.onFallbackToCloud);
+    const db = new SyncableDatabase(dbName, config.mode, config.peerServer, config.discoveryInterval, config.onFallbackToCloud, config.onPeerError);
     await db.init();
     return db;
   }
@@ -176,10 +206,80 @@ export class SyncableDatabase {
     console.log(`[SyncableDatabase] Initialization complete for database: ${this.dbName}`);
 
     if (this.mode === 'syncing') {
-      console.log(`[SyncableDatabase] Initializing peer connection...`);
-      await this.initPeer();
-      this.startDiscovery();
+      // Non-blocking peer initialization - database works even if peer fails
+      this.initPeerWithRetry();
     }
+  }
+
+  /**
+   * Attempts to initialize peer connection with automatic retry on failure.
+   * This is non-blocking - the database works locally even if peer connection fails.
+   */
+  private initPeerWithRetry(): void {
+    console.log(`[SyncableDatabase] Initializing peer connection...`);
+    
+    this.tryInitPeer().catch(err => {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.warn(`[SyncableDatabase] Peer connection failed, will retry in ${PEER_RETRY_INTERVAL / 1000}s:`, error.message);
+      
+      // Notify via callback
+      if (this.onPeerErrorCallback) {
+        try {
+          this.onPeerErrorCallback(error);
+        } catch (e) {
+          console.error('Peer error callback threw:', e);
+        }
+      }
+      
+      // Schedule retry
+      this.schedulePeerRetry();
+    });
+  }
+
+  /**
+   * Schedules periodic retry of peer connection.
+   */
+  private schedulePeerRetry(): void {
+    // Clear existing timer if any
+    if (this.peerRetryTimer) {
+      clearInterval(this.peerRetryTimer);
+    }
+    
+    this.peerRetryTimer = setInterval(() => {
+      // Only retry if not already connected
+      if (!this.peer) {
+        console.log('[SyncableDatabase] Retrying peer connection...');
+        this.tryInitPeer().catch(retryErr => {
+          console.warn('[SyncableDatabase] Peer retry failed:', retryErr instanceof Error ? retryErr.message : String(retryErr));
+        });
+      } else {
+        // Connected, stop retrying
+        this.clearPeerRetryTimer();
+      }
+    }, PEER_RETRY_INTERVAL);
+  }
+
+  /**
+   * Clears the peer retry timer.
+   */
+  private clearPeerRetryTimer(): void {
+    if (this.peerRetryTimer) {
+      clearInterval(this.peerRetryTimer);
+      this.peerRetryTimer = null;
+    }
+  }
+
+  /**
+   * Attempts to initialize peer connection. Throws on failure.
+   */
+  private async tryInitPeer(): Promise<void> {
+    await this.initPeer();
+    
+    // If we get here, connection succeeded - clear retry timer
+    this.clearPeerRetryTimer();
+    
+    // Start discovery
+    this.startDiscovery();
   }
 
   private async initPeer(): Promise<void> {
@@ -227,11 +327,15 @@ export class SyncableDatabase {
       });
     };
     
+    // Get ICE servers config (user-provided or defaults)
+    const iceServers = this.peerServerConfig?.iceServers || DEFAULT_ICE_SERVERS;
+    const iceConfig = { iceServers };
+    
     // Build server config and PeerJS options
-    const hasUserConfig = this.peerServerConfig && 
+    const hasUserServerConfig = this.peerServerConfig && 
       (this.peerServerConfig.host || this.peerServerConfig.port || this.peerServerConfig.path);
     
-    if (hasUserConfig) {
+    if (hasUserServerConfig) {
       // User provided custom server config - try it first
       const userServerConfig: ActiveServerConfig = {
         host: this.peerServerConfig!.host || PEERJS_CLOUD_HOST,
@@ -245,6 +349,7 @@ export class SyncableDatabase {
         port: userServerConfig.port,
         path: userServerConfig.path,
         secure: userServerConfig.secure,
+        config: iceConfig,
       };
       
       try {
@@ -282,8 +387,12 @@ export class SyncableDatabase {
       secure: PEERJS_CLOUD_SECURE,
     };
     
-    // Empty options = PeerJS uses its built-in cloud defaults (including ICE servers with TURN)
-    await connectPeer({}, cloudServerConfig);
+    // Use PeerJS cloud for signaling, but still apply ICE servers config
+    const cloudPeerOptions: import('peerjs').PeerOptions = {
+      config: iceConfig,
+    };
+    
+    await connectPeer(cloudPeerOptions, cloudServerConfig);
     console.log('[SyncableDatabase] Connected to PeerJS cloud server');
   }
 
@@ -765,6 +874,9 @@ export class SyncableDatabase {
       clearInterval(this.discoveryTimer);
       this.discoveryTimer = null;
     }
+    
+    // Stop peer retry timer
+    this.clearPeerRetryTimer();
     
     for (const peerConn of this.peers.values()) {
       peerConn.close();

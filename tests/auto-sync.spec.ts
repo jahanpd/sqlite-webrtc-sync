@@ -491,15 +491,14 @@ test.describe('Auto-Discovery and Real-time Sync', () => {
     try {
       const sharedDbName = uniqueDbName('events-test');
       
-      // Create databases and register callbacks
+      // Create databases with callbacks registered immediately (before peer connection)
+      // This ensures we don't miss the peerConnected event
       await pageA.evaluate(async (name) => {
-        await (window as any).createSyncingDb(name);
-        (window as any).registerSyncCallback(name);
+        await (window as any).createSyncingDb(name, null, true);  // true = register callbacks
       }, sharedDbName);
       
       await pageB.evaluate(async (name) => {
-        await (window as any).createSyncingDb(name);
-        (window as any).registerSyncCallback(name);
+        await (window as any).createSyncingDb(name, null, true);  // true = register callbacks
       }, sharedDbName);
       
       // Wait for auto-discovery

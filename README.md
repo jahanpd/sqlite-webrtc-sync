@@ -66,6 +66,10 @@ const db = await createDatabase('my-db', {
   discoveryInterval: 5000,  // optional, default 5000ms
   onFallbackToCloud: (reason) => {
     console.log('Using PeerJS cloud due to:', reason);
+  },
+  onPeerError: (error) => {
+    // Database still works locally! Peer connection will retry every 60s
+    console.warn('Peer connection failed:', error.message);
   }
 });
 ```
@@ -112,6 +116,8 @@ await db.close();
 ## Syncing API
 
 Available when `mode: 'syncing'`.
+
+> **Note:** The database works locally even if peer connection fails. If WebRTC/ICE errors occur (e.g., TURN server issues), the local database remains fully functional and peer connection automatically retries every 60 seconds. Use the `onPeerError` callback to be notified of connection issues.
 
 ### Peer Management
 
@@ -243,7 +249,7 @@ const schema = defineSchema({
   <App />
 </DatabaseProvider>
 
-// With custom peer server and fallback
+// With custom peer server, fallback, and error handling
 <DatabaseProvider
   name="my-app"
   schema={schema}
@@ -256,6 +262,7 @@ const schema = defineSchema({
   }}
   discoveryInterval={5000}
   onFallbackToCloud={(reason) => console.log('Fallback:', reason)}
+  onPeerError={(error) => console.warn('Peer error:', error.message)}
 >
   <App />
 </DatabaseProvider>
@@ -458,6 +465,52 @@ const db = await createDatabase('my-db', {
 | `path` | string | `/` | Server path |
 | `secure` | boolean | true | Use HTTPS/WSS |
 | `fallbackToCloud` | boolean | false | Fall back to PeerJS cloud on connection failure |
+| `iceServers` | IceServer[] | Google STUN + PeerJS TURN | Custom STUN/TURN servers for WebRTC |
+
+### ICE Server Configuration
+
+By default, the library uses Google STUN servers and PeerJS public TURN servers. You can provide custom ICE servers for better reliability or to use your own TURN infrastructure:
+
+```javascript
+const db = await createDatabase('my-db', {
+  mode: 'syncing',
+  peerServer: {
+    host: 'your-server.com',
+    port: 443,
+    secure: true,
+    iceServers: [
+      // STUN servers (help discover public IP)
+      { urls: 'stun:stun.l.google.com:19302' },
+      
+      // TURN servers (relay when direct connection fails)
+      { 
+        urls: 'turn:your-turn-server.com:3478',
+        username: 'your-username',
+        credential: 'your-password'
+      }
+    ]
+  }
+});
+```
+
+**Default ICE servers** (used when `iceServers` is not specified):
+```javascript
+[
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { 
+    urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'],
+    username: 'peerjs',
+    credential: 'peerjsp'
+  }
+]
+```
+
+**TURN server providers:**
+- **Twilio** - ~$0.40/GB, reliable global coverage
+- **Xirsys** - ~$0.30/GB, REST API for credentials
+- **Metered.ca** - Free tier (500MB/month) + ~$0.40/GB
+- **Self-hosted coturn** - Free (just server costs)
 
 ---
 

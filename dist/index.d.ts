@@ -1,17 +1,25 @@
 type DatabaseMode = 'syncing' | 'local';
+export interface IceServer {
+    urls: string | string[];
+    username?: string;
+    credential?: string;
+}
 export interface PeerServerConfig {
     host?: string;
     port?: number;
     path?: string;
     secure?: boolean;
     fallbackToCloud?: boolean;
+    iceServers?: IceServer[];
 }
 type FallbackCallback = (reason: string) => void;
+type PeerErrorCallback = (error: Error) => void;
 export interface DatabaseConfig {
     mode: DatabaseMode;
     peerServer?: PeerServerConfig;
     discoveryInterval?: number;
     onFallbackToCloud?: FallbackCallback;
+    onPeerError?: PeerErrorCallback;
 }
 export interface QueryResult {
     rows: Record<string, unknown>[];
@@ -53,6 +61,7 @@ export declare class SyncableDatabase {
     private isInitialized;
     private activeServerConfig;
     private discoveryTimer;
+    private peerRetryTimer;
     private operationQueue;
     private appliedOperations;
     private onPeerConnectedCallbacks;
@@ -61,9 +70,27 @@ export declare class SyncableDatabase {
     private onMutationCallbacks;
     private onDataChangedCallbacks;
     private onFallbackToCloudCallback?;
+    private onPeerErrorCallback?;
     private constructor();
     static create(dbName: string, config: DatabaseConfig): Promise<SyncableDatabase>;
     private init;
+    /**
+     * Attempts to initialize peer connection with automatic retry on failure.
+     * This is non-blocking - the database works locally even if peer connection fails.
+     */
+    private initPeerWithRetry;
+    /**
+     * Schedules periodic retry of peer connection.
+     */
+    private schedulePeerRetry;
+    /**
+     * Clears the peer retry timer.
+     */
+    private clearPeerRetryTimer;
+    /**
+     * Attempts to initialize peer connection. Throws on failure.
+     */
+    private tryInitPeer;
     private initPeer;
     private startDiscovery;
     discoverPeers(): Promise<void>;

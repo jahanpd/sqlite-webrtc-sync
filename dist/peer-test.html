@@ -34,8 +34,20 @@
       console.log(msg);
     }
 
+    // Helper to wait for peer ID to be available (with timeout)
+    async function waitForPeerId(db, timeout = 15000) {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        const peerId = db.getPeerId();
+        if (peerId) return peerId;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      return null; // Timeout - peer connection may have failed
+    }
+
     // Create a syncing database and return its peer ID
-    window.createSyncingDb = async function(name, peerServerConfig) {
+    // If registerCallbacks is true, registers event callbacks before waiting for connection
+    window.createSyncingDb = async function(name, peerServerConfig, registerCallbacks = false) {
       log(`Creating syncing database: ${name}`);
       const config = {
         mode: 'syncing',
@@ -43,7 +55,34 @@
       };
       const db = await createDatabase(name, config);
       window.databases.set(name, db);
-      const peerId = db.getPeerId();
+      
+      // Optionally register callbacks immediately (before waiting for peer)
+      if (registerCallbacks) {
+        const events = { 
+          peerConnected: [], 
+          peerDisconnected: [], 
+          syncReceived: [] 
+        };
+        window.syncEvents.set(name, events);
+        
+        db.onPeerConnected((peerId) => {
+          log(`[Event] ${name}: peer connected - ${peerId}`);
+          events.peerConnected.push(peerId);
+        });
+        
+        db.onPeerDisconnected((peerId) => {
+          log(`[Event] ${name}: peer disconnected - ${peerId}`);
+          events.peerDisconnected.push(peerId);
+        });
+        
+        db.onSyncReceived((operation) => {
+          log(`[Event] ${name}: sync received - ${operation.table}:${operation.rowId}`);
+          events.syncReceived.push(operation);
+        });
+      }
+      
+      // Wait for peer connection (non-blocking init means we need to wait)
+      const peerId = await waitForPeerId(db);
       log(`Database ${name} created with peer ID: ${peerId}`);
       return { peerId };
     };

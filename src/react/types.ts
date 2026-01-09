@@ -17,6 +17,8 @@ export interface DatabaseProviderProps<S extends SchemaDef> {
   discoveryInterval?: number;
   /** Callback fired when connection falls back to PeerJS cloud server */
   onFallbackToCloud?: (reason: string) => void;
+  /** Callback fired when peer connection fails (database still works locally) */
+  onPeerError?: (error: Error) => void;
   children: React.ReactNode;
 }
 
