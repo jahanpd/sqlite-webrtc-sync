@@ -59,13 +59,17 @@ export function useSyncStatus(dbName: string): SyncStatus {
       });
     };
     
-    // Register event listeners for syncing mode
+    // Register event listeners and capture unsubscribe functions
+    let unsubConnected: (() => void) | undefined;
+    let unsubDisconnected: (() => void) | undefined;
+    let unsubSyncReceived: (() => void) | undefined;
+    
     const hasEvents = typeof db.onPeerConnected === 'function';
     
     if (hasEvents) {
-      db.onPeerConnected?.(() => updateStatus());
-      db.onPeerDisconnected?.(() => updateStatus());
-      db.onSyncReceived?.(() => updateStatus());
+      unsubConnected = db.onPeerConnected?.(() => updateStatus());
+      unsubDisconnected = db.onPeerDisconnected?.(() => updateStatus());
+      unsubSyncReceived = db.onSyncReceived?.(() => updateStatus());
     }
     
     // Poll for updates (covers cases where events might be missed)
@@ -73,6 +77,10 @@ export function useSyncStatus(dbName: string): SyncStatus {
     
     return () => {
       clearInterval(interval);
+      // Unsubscribe callbacks to prevent memory leaks
+      unsubConnected?.();
+      unsubDisconnected?.();
+      unsubSyncReceived?.();
     };
   }, [db]);
   

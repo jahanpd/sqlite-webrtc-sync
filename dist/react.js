@@ -20263,15 +20263,21 @@ function useSyncStatus(dbName) {
         mode: isSyncingMode ? "syncing" : "local"
       });
     };
+    let unsubConnected;
+    let unsubDisconnected;
+    let unsubSyncReceived;
     const hasEvents = typeof db.onPeerConnected === "function";
     if (hasEvents) {
-      db.onPeerConnected?.(() => updateStatus());
-      db.onPeerDisconnected?.(() => updateStatus());
-      db.onSyncReceived?.(() => updateStatus());
+      unsubConnected = db.onPeerConnected?.(() => updateStatus());
+      unsubDisconnected = db.onPeerDisconnected?.(() => updateStatus());
+      unsubSyncReceived = db.onSyncReceived?.(() => updateStatus());
     }
     const interval = setInterval(updateStatus, 2e3);
     return () => {
       clearInterval(interval);
+      unsubConnected?.();
+      unsubDisconnected?.();
+      unsubSyncReceived?.();
     };
   }, [db]);
   return status;
@@ -20305,14 +20311,18 @@ function usePeers(dbName) {
     const updatePeers = () => {
       setPeers(db.getConnectedPeers?.() ?? []);
     };
+    let unsubConnected;
+    let unsubDisconnected;
     const hasEvents = typeof db.onPeerConnected === "function";
     if (hasEvents) {
-      db.onPeerConnected?.(() => updatePeers());
-      db.onPeerDisconnected?.(() => updatePeers());
+      unsubConnected = db.onPeerConnected?.(() => updatePeers());
+      unsubDisconnected = db.onPeerDisconnected?.(() => updatePeers());
     }
     const interval = setInterval(updatePeers, 2e3);
     return () => {
       clearInterval(interval);
+      unsubConnected?.();
+      unsubDisconnected?.();
     };
   }, [db]);
   const connectToPeer = useCallback4(async (peerId) => {

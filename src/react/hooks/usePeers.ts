@@ -64,12 +64,15 @@ export function usePeers(dbName: string): PeersResult {
       setPeers(db.getConnectedPeers?.() ?? []);
     };
     
-    // Register event listeners
+    // Register event listeners and capture unsubscribe functions
+    let unsubConnected: (() => void) | undefined;
+    let unsubDisconnected: (() => void) | undefined;
+    
     const hasEvents = typeof db.onPeerConnected === 'function';
     
     if (hasEvents) {
-      db.onPeerConnected?.(() => updatePeers());
-      db.onPeerDisconnected?.(() => updatePeers());
+      unsubConnected = db.onPeerConnected?.(() => updatePeers());
+      unsubDisconnected = db.onPeerDisconnected?.(() => updatePeers());
     }
     
     // Poll for updates as backup
@@ -77,6 +80,9 @@ export function usePeers(dbName: string): PeersResult {
     
     return () => {
       clearInterval(interval);
+      // Unsubscribe callbacks to prevent memory leaks
+      unsubConnected?.();
+      unsubDisconnected?.();
     };
   }, [db]);
   
